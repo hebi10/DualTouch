@@ -19,6 +19,8 @@ class SettingsActivity : Activity() {
     private lateinit var root: LinearLayout
     private lateinit var scroll: ScrollView
     private lateinit var previewRow: LinearLayout
+    private lateinit var viewport: AdaptiveSpec
+    private var savedScrollY = 0
     private var appearance = TouchAppearance()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,16 +28,26 @@ class SettingsActivity : Activity() {
         palette = UiPalette(this)
         store = AppearanceSettings(this)
         appearance = store.get()
-        render()
+        savedScrollY = savedInstanceState?.getInt("scrollY") ?: 0
+        render(savedScrollY)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::scroll.isInitialized) outState.putInt("scrollY", scroll.scrollY)
+        super.onSaveInstanceState(outState)
     }
 
     private fun render(scrollTo: Int = 0) {
+        viewport = AdaptiveLayout.specFor(this)
         scroll = ScrollView(this).apply {
             setBackgroundColor(palette.background)
             isFillViewport = true
+            clipToPadding = false
         }
-        root = UiKit.column(this, 20)
-        scroll.addView(root)
+        root = UiKit.centeredScrollContent(
+            this, scroll, viewport, maxReadingWidth = !viewport.useTwoPanes
+        )
+        UiKit.applyWindowInsets(scroll)
         setContentView(scroll)
 
         val back = UiKit.action(this, palette, "설정 닫기", false)
@@ -46,6 +58,15 @@ class SettingsActivity : Activity() {
             "플로팅 Thumb와 영점 기준점의 모양을 조절합니다. 변경 내용은 즉시 저장됩니다.",
             14f, secondary = true), topDp = 6, bottomDp = 18)
 
+        val pageRoot = root
+        var controlsRoot: LinearLayout? = null
+        if (viewport.useTwoPanes) {
+            val panes = UiKit.panePair(this, viewport.paneGapDp, 0.40f)
+            UiKit.add(pageRoot, panes.row, topDp = 10)
+            root = panes.primary
+            controlsRoot = panes.secondary
+        }
+
         UiKit.add(root, UiKit.sectionHeader(this, palette, "미리보기"), bottomDp = 10)
         val preview = UiKit.card(this, palette, 18)
         previewRow = LinearLayout(this).apply {
@@ -53,10 +74,16 @@ class SettingsActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
         }
         redrawPreview()
-        UiKit.add(preview, previewRow)
+        val previewScroll = HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            contentDescription = "Thumb와 기준점 미리보기. 크기가 크면 가로로 움직여 확인합니다."
+            addView(previewRow)
+        }
+        UiKit.add(preview, previewScroll)
         UiKit.add(preview, UiKit.text(this, palette,
             "Thumb · 직접 터치점 · 자동 터치점", 12f, secondary = true), topDp = 10)
         UiKit.add(root, preview, bottomDp = 22)
+        if (controlsRoot != null) root = controlsRoot
 
         UiKit.add(root, UiKit.sectionHeader(this, palette, "플로팅 Thumb"), bottomDp = 8)
         addSlider("Thumb 크기", "48–88dp, 터치 영역을 충분히 확보합니다.",
@@ -98,7 +125,7 @@ class SettingsActivity : Activity() {
             render()
         }
         UiKit.add(root, reset, topDp = 12, bottomDp = 28)
-
+        root = pageRoot
         scroll.post { scroll.scrollTo(0, scrollTo) }
     }
 
@@ -123,6 +150,7 @@ class SettingsActivity : Activity() {
             this.max = max - min
             progress = current - min
             contentDescription = title
+            minHeight = UiKit.dp(this@SettingsActivity, 48)
             progressTintList = ColorStateList.valueOf(palette.text)
             thumbTintList = ColorStateList.valueOf(palette.text)
             progressBackgroundTintList = ColorStateList.valueOf(palette.line)
@@ -151,34 +179,61 @@ class SettingsActivity : Activity() {
         UiKit.add(root, UiKit.text(this, palette, title, 15f, true), topDp = 16)
         val horizontal = HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
+            contentDescription = "$title 색상 선택 목록. 가로로 이동해 다른 색을 선택할 수 있습니다."
         }
         val choices = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
+        val chips = mutableListOf<Pair<ColorChoice, TextView>>()
         TouchColors.choices.forEach { choice ->
             val group = UiKit.column(this, 3)
             val marker = previewDot(
                 if (choice.argb == active) "✓" else "",
-                choice.argb, 42, 100,
+                choice.argb, 48, 100,
                 choice.argb == active
             )
-            marker.contentDescription = "$title: ${choice.title}"
             marker.isClickable = true
+            marker.isFocusable = true
+            setChipState(marker, title, choice, choice.argb == active)
             marker.setOnClickListener {
                 appearance = modify(choice.argb)
                 persist()
-                render(scroll.scrollY)
+                redrawPreview()
+                chips.forEach { (option, chip) ->
+                    setChipState(chip, title, option, option.argb == choice.argb)
+                }
             }
-            val lp = LinearLayout.LayoutParams(UiKit.dp(this, 44), UiKit.dp(this, 44))
-            group.addView(marker, lp)
-            group.addView(UiKit.centeredLabel(this, choice.title, palette.secondary, 11f))
-            choices.addView(group, LinearLayout.LayoutParams(
-                UiKit.dp(this, 63), ViewGroup.LayoutParams.WRAP_CONTENT
+            group.addView(marker, LinearLayout.LayoutParams(
+                UiKit.dp(this, 48), UiKit.dp(this, 48)
             ))
+            group.addView(UiKit.centeredLabel(
+                this, choice.title, palette.secondary, 11f))
+            choices.addView(group, LinearLayout.LayoutParams(
+                UiKit.dp(this, 68), ViewGroup.LayoutParams.WRAP_CONTENT
+            ))
+            chips.add(choice to marker)
         }
         horizontal.addView(choices)
         UiKit.add(root, horizontal, topDp = 8)
+    }
+
+    private fun setChipState(
+        marker: TextView,
+        title: String,
+        choice: ColorChoice,
+        selected: Boolean,
+    ) {
+        marker.text = if (selected) "✓" else ""
+        marker.isSelected = selected
+        marker.contentDescription = "$title: ${choice.title}" +
+            if (selected) ", 선택됨" else ", 선택 가능"
+        marker.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(choice.argb)
+            setStroke(UiKit.dp(this@SettingsActivity, if (selected) 3 else 1),
+                if (selected) palette.text else palette.line)
+        }
     }
 
     private fun redrawPreview() {

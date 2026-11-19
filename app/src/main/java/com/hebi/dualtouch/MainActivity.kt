@@ -32,6 +32,9 @@ class MainActivity : Activity() {
     private lateinit var palette: UiPalette
     private lateinit var settings: AppearanceSettings
     private lateinit var root: LinearLayout
+    private lateinit var viewport: AdaptiveSpec
+    private lateinit var scrollContainer: ScrollView
+    private var restoreScrollY = 0
     private var page = Page.HOME
     private var statusLabel: TextView? = null
     private var floatingButton: Button? = null
@@ -41,6 +44,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         palette = UiPalette(this)
         settings = AppearanceSettings(this)
+        restoreScrollY = savedInstanceState?.getInt("scrollY") ?: 0
         page = savedInstanceState?.getString("page")?.let {
             runCatching { Page.valueOf(it) }.getOrNull()
         } ?: if (settings.onboardingRead) Page.HOME else Page.INTRO
@@ -49,6 +53,7 @@ class MainActivity : Activity() {
 
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString("page", page.name)
+        if (::scrollContainer.isInitialized) outState.putInt("scrollY", scrollContainer.scrollY)
         super.onSaveInstanceState(outState)
     }
 
@@ -68,13 +73,17 @@ class MainActivity : Activity() {
     }
 
     private fun render() {
-        val scroll = ScrollView(this).apply {
+        viewport = AdaptiveLayout.specFor(this)
+        scrollContainer = ScrollView(this).apply {
             isFillViewport = true
             setBackgroundColor(palette.background)
+            clipToPadding = false
         }
-        root = UiKit.column(this, 20)
-        scroll.addView(root)
-        setContentView(scroll)
+        root = UiKit.centeredScrollContent(
+            this, scrollContainer, viewport, maxReadingWidth = page != Page.HOME
+        )
+        UiKit.applyWindowInsets(scrollContainer)
+        setContentView(scrollContainer)
         statusLabel = null
         floatingButton = null
 
@@ -87,9 +96,15 @@ class MainActivity : Activity() {
             Page.ADVANCED -> advanced()
             Page.HELP -> help()
         }
+        if (restoreScrollY > 0) {
+            val previousPosition = restoreScrollY
+            restoreScrollY = 0
+            scrollContainer.post { scrollContainer.scrollTo(0, previousPosition) }
+        }
     }
 
     private fun go(destination: Page) {
+        restoreScrollY = 0
         page = destination
         uiHandler.removeCallbacks(updateStatus)
         render()
@@ -169,36 +184,53 @@ class MainActivity : Activity() {
     }
 
     private fun home() {
-        header("DualTouch", "폴더블 양쪽 터치 제어 · 기술 검증 모드", false)
-        section("서비스 상태")
-        val current = TouchMirrorService.current
+        header("DualTouch", "좌우 분할 화면 터치 제어 · 기술 검증", false)
+
+        val pageRoot = root
+        val primary: LinearLayout
+        val secondary: LinearLayout
+        if (viewport.useTwoPanes) {
+            val panes = UiKit.panePair(this, viewport.paneGapDp, 0.46f)
+            UiKit.add(pageRoot, panes.row, topDp = 16)
+            primary = panes.primary
+            secondary = panes.secondary
+        } else {
+            primary = pageRoot
+            secondary = pageRoot
+        }
+
+        root = primary
+        section("서비스 상태", if (viewport.useTwoPanes) 0 else 22)
+        val service = TouchMirrorService.current
         val stateCard = UiKit.card(this, palette, 18)
         UiKit.add(stateCard, UiKit.text(this, palette, "현재 상태", 13f, secondary = true))
         statusLabel = UiKit.text(this, palette, serviceStatus(), 17f, true)
         UiKit.add(stateCard, statusLabel!!, topDp = 8)
         UiKit.add(stateCard, UiKit.text(this, palette,
-            if (current == null) "권한을 설정하면 플로팅 Thumb를 표시할 수 있습니다."
-            else "플로팅 Thumb는 표시된 상태에서 실행·중지·방향·영점 조절을 제공합니다.",
-            12f, secondary = true), topDp = 8)
+            if (service == null) {
+                "권한을 설정하면 플로팅 Thumb를 표시할 수 있습니다."
+            } else {
+                "Thumb 메뉴에서 실행·중지, 방향 선택과 영점을 조절합니다."
+            }, 13f, secondary = true), topDp = 8)
         UiKit.add(root, stateCard, topDp = 10)
 
         section("플로팅 컨트롤")
-        addBody("플로팅 표시를 누르면 화면 위에 원형 Thumb가 나타납니다. " +
-            "Thumb를 누르면 실행·중지 / 좌·우 선택 / 영점 조절 메뉴가 열립니다.",
-            secondary = true)
+        addBody("플로팅 표시를 누르면 화면에 작은 원형 Thumb가 나타납니다. " +
+            "Thumb를 누르면 세 가지 제어 메뉴가 열립니다.", secondary = true)
         floatingButton = addAction(floatingButtonLabel(), top = 14) {
-            val service = TouchMirrorService.current
+            val currentService = TouchMirrorService.current
             when {
-                service == null -> go(Page.PERMISSION)
-                service.isFloatingVisible -> {
-                    service.hideFloatingControl()
+                currentService == null -> go(Page.PERMISSION)
+                currentService.isFloatingVisible -> {
+                    currentService.hideFloatingControl()
                     statusLabel?.text = serviceStatus()
                     floatingButton?.text = floatingButtonLabel()
                 }
                 else -> {
-                    val shown = service.showFloatingControl()
-                    statusLabel?.text = if (shown) serviceStatus()
-                        else "Thumb를 표시할 수 없습니다. 권한과 서비스를 확인하세요."
+                    val shown = currentService.showFloatingControl()
+                    statusLabel?.text = if (shown) serviceStatus() else {
+                        "Thumb를 표시할 수 없습니다. 접근성 설정을 확인하세요."
+                    }
                     floatingButton?.text = floatingButtonLabel()
                 }
             }
@@ -207,21 +239,23 @@ class MainActivity : Activity() {
             startActivity(Intent(this, SettingsActivity::class.java))
         }
 
-        section("사용 준비")
+        root = secondary
+        section("사용 준비", if (viewport.useTwoPanes) 0 else 22)
         card("01 · 두 앱 분할",
-            "Fold를 펼친 뒤 Test Left / Test Right 앱을 좌우에 각각 배치합니다.")
+            "Fold를 펼친 뒤 Test Left와 Test Right를 좌우에 각각 배치합니다.")
         card("02 · 직접 터치 방향",
-            "Thumb 메뉴에서 좌 → 우 또는 우 → 좌를 선택합니다. 기본값은 좌 → 우입니다.")
+            "Thumb 메뉴에서 좌 → 우 또는 우 → 좌를 선택합니다.")
         card("03 · 시작과 긴급 중지",
-            "Thumb에서 실행을 선택한 후 테스트합니다. 볼륨 아래 버튼은 긴급 중지입니다.")
+            "Thumb에서 실행을 선택한 후 테스트합니다. 볼륨 아래 버튼으로 긴급 중지할 수 있습니다.")
         addAction("분할 화면 안내", false) { go(Page.GUIDE) }
         addAction("접근성 권한 안내", false) { go(Page.PERMISSION) }
 
         section("기술 검증")
-        card("Android 제약",
-            "원본 터치가 앱에 그대로 전달되지 않을 수 있습니다. 제스처 재생·오입력 여부는 실제 폴드 QA에서 확인합니다.")
+        card("Android 입력 처리 제한",
+            "원본 터치가 그대로 전달되지 않을 수 있어 실기기에서 정확성과 복구 동작을 확인해야 합니다.")
         addAction("추가 입력 방식 비교", false) { go(Page.ADVANCED) }
         addAction("오류·중지 안내", false) { go(Page.HELP) }
+        root = pageRoot
     }
 
     private fun permission() {

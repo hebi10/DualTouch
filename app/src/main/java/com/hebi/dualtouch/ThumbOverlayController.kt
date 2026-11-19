@@ -3,14 +3,17 @@ package com.hebi.dualtouch
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
 import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.WindowInsets
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import com.hebi.dualtouch.core.CalibrationOffset
 import com.hebi.dualtouch.core.CoordinateMapper
@@ -49,7 +52,7 @@ internal class ThumbOverlayController(
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     private val appearanceSettings = AppearanceSettings(context)
     private var thumb: Marker? = null
-    private var menu: LinearLayout? = null
+    private var menu: View? = null
     private var red: Marker? = null
     private var white: Marker? = null
     private var calibrating = false
@@ -61,7 +64,7 @@ internal class ThumbOverlayController(
     fun show(pair: WindowPair?): Boolean {
         if (thumb != null) return true
         val appearance = appearanceSettings.get()
-        val bounds = windowManager.currentWindowMetrics.bounds
+        val bounds = safeWindowBounds()
         val source = pair?.source(sideProvider())?.bounds
         val size = dp(appearance.thumbSizeDp)
         val x = source?.left?.plus(dp(12)) ?: bounds.left + dp(24)
@@ -73,7 +76,7 @@ internal class ThumbOverlayController(
         view.contentDescription = "DualTouch 썸. 누르면 실행·중지, 좌우 방향, 영점 조절 메뉴"
         val layout = params(size, size, x, y)
         configureDrag(view, layout, onMove = { nextX, nextY ->
-            val screen = windowManager.currentWindowMetrics.bounds
+            val screen = safeWindowBounds()
             move(Marker(view, layout),
                 nextX.coerceIn(screen.left,
                     (screen.right - layout.width).coerceAtLeast(screen.left)),
@@ -117,8 +120,11 @@ internal class ThumbOverlayController(
         val oldY = marker.layout.y + marker.layout.height / 2
         marker.layout.width = size
         marker.layout.height = size
-        marker.layout.x = oldX - size / 2
-        marker.layout.y = oldY - size / 2
+        val safe = safeWindowBounds()
+        marker.layout.x = (oldX - size / 2).coerceIn(
+            safe.left, (safe.right - size).coerceAtLeast(safe.left))
+        marker.layout.y = (oldY - size / 2).coerceIn(
+            safe.top, (safe.bottom - size).coerceAtLeast(safe.top))
         marker.view.minWidth = size
         marker.view.minHeight = size
         marker.view.setTextColor(AppearanceRules.readableTextColor(fill))
@@ -153,14 +159,17 @@ internal class ThumbOverlayController(
         val marker = thumb ?: return
         val pair = pairProvider()
         val source = pair?.source(sideProvider())?.bounds
-        val bounds = windowManager.currentWindowMetrics.bounds
+        val bounds = safeWindowBounds()
         val x = source?.left?.plus(dp(12)) ?: if (sideProvider() == TouchSide.LEFT) {
             bounds.left + dp(24)
         } else {
             bounds.right - marker.layout.width - dp(24)
         }
         val y = source?.top?.plus(dp(108)) ?: bounds.top + dp(150)
-        move(marker, x, y)
+        move(marker,
+            x.coerceIn(bounds.left, (bounds.right - marker.layout.width).coerceAtLeast(bounds.left)),
+            y.coerceIn(bounds.top, (bounds.bottom - marker.layout.height).coerceAtLeast(bounds.top))
+        )
     }
 
     fun hideForDispatch() {
@@ -205,16 +214,8 @@ internal class ThumbOverlayController(
 
         val position = IntArray(2)
         thumb?.view?.getLocationOnScreen(position)
-        val bounds = windowManager.currentWindowMetrics.bounds
-        val width = dp(218)
-        val x = (position[0] + dp(55)).coerceIn(
-            bounds.left, (bounds.right - width).coerceAtLeast(bounds.left))
-        val y = position[1].coerceIn(bounds.top, (bounds.bottom - dp(180)).coerceAtLeast(bounds.top))
-        try {
-            windowManager.addView(column,
-                params(width, WindowManager.LayoutParams.WRAP_CONTENT, x, y))
-            menu = column
-        } catch (_: RuntimeException) {
+        val preferredX = position[0] + (thumb?.view?.width ?: dp(52)) + dp(8)
+        if (!showMenu(column, 242, preferredX, position[1])) {
             onMenuVisibilityChanged(false)
         }
     }
@@ -323,17 +324,11 @@ internal class ThumbOverlayController(
         }
         addButton(column, "취소") { endCalibration() }
 
-        val bounds = windowManager.currentWindowMetrics.bounds
-        val width = dp(270)
+        val bounds = safeWindowBounds()
         onMenuVisibilityChanged(true)
-        try {
-            windowManager.addView(column,
-                params(width, WindowManager.LayoutParams.WRAP_CONTENT,
-                    (bounds.left + dp(10)).coerceAtMost(bounds.right - width),
-                    bounds.top + dp(60)))
-            menu = column
-        } catch (_: RuntimeException) {
+        if (!showMenu(column, 276, bounds.left + dp(10), bounds.top + dp(12))) {
             endCalibration()
+            onMenuVisibilityChanged(false)
         }
     }
 
@@ -490,9 +485,68 @@ internal class ThumbOverlayController(
         parent.addView(Button(context).apply {
             text = label
             isAllCaps = false
-            textSize = 13f
+            textSize = 15f
+            minHeight = dp(52)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
             setOnClickListener { action() }
         })
+    }
+
+    private fun safeWindowBounds(): Rect {
+        val metrics = windowManager.currentWindowMetrics
+        val bounds = metrics.bounds
+        val insets = metrics.windowInsets.getInsets(WindowInsets.Type.systemBars())
+        val left = bounds.left + insets.left
+        val top = bounds.top + insets.top
+        return Rect(
+            left, top,
+            (bounds.right - insets.right).coerceAtLeast(left + 1),
+            (bounds.bottom - insets.bottom).coerceAtLeast(top + 1)
+        )
+    }
+
+    private fun showMenu(
+        content: LinearLayout,
+        widthDp: Int,
+        requestedX: Int,
+        requestedY: Int,
+    ): Boolean {
+        val safe = safeWindowBounds()
+        val width = dp(widthDp).coerceAtMost(safe.width()).coerceAtLeast(1)
+        val availableHeight = (safe.height() - dp(8)).coerceAtLeast(1)
+        val scrollView = object : ScrollView(context) {
+            override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+                val maxHeight = View.MeasureSpec.makeMeasureSpec(
+                    availableHeight, View.MeasureSpec.AT_MOST
+                )
+                super.onMeasure(widthMeasureSpec, maxHeight)
+            }
+        }.apply {
+            isVerticalScrollBarEnabled = true
+            isFillViewport = false
+            addView(content)
+        }
+        scrollView.measure(
+            View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(availableHeight, View.MeasureSpec.AT_MOST)
+        )
+        val height = scrollView.measuredHeight.coerceAtLeast(1)
+        val x = requestedX.coerceIn(
+            safe.left, (safe.right - width).coerceAtLeast(safe.left)
+        )
+        val y = requestedY.coerceIn(
+            safe.top, (safe.bottom - height).coerceAtLeast(safe.top)
+        )
+        return try {
+            windowManager.addView(
+                scrollView,
+                params(width, WindowManager.LayoutParams.WRAP_CONTENT, x, y)
+            )
+            menu = scrollView
+            true
+        } catch (_: RuntimeException) {
+            false
+        }
     }
 
     private fun params(width: Int, height: Int, x: Int, y: Int) =

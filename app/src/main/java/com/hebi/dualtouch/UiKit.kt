@@ -1,12 +1,16 @@
 package com.hebi.dualtouch
 
 import android.content.Context
+import android.app.Activity
 import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
+import android.view.WindowInsets
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.FrameLayout
 import android.widget.TextView
 
 class UiPalette(context: Context) {
@@ -24,6 +28,63 @@ class UiPalette(context: Context) {
 }
 
 object UiKit {
+    data class PanePair(
+        val row: LinearLayout,
+        val primary: LinearLayout,
+        val secondary: LinearLayout,
+    )
+
+    fun panePair(context: Context, gapDp: Int = 24, primaryWeight: Float = 0.46f): PanePair {
+        val row = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            baselineAligned = false
+        }
+        val primary = column(context)
+        val secondary = column(context)
+        row.addView(primary, LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, primaryWeight,
+        ).apply { marginEnd = dp(context, gapDp) })
+        row.addView(secondary, LinearLayout.LayoutParams(
+            0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f - primaryWeight,
+        ))
+        return PanePair(row, primary, secondary)
+    }
+
+    fun applyWindowInsets(scroll: ScrollView) {
+        scroll.setOnApplyWindowInsetsListener { view, insets ->
+            val systemBars = insets.getInsets(WindowInsets.Type.systemBars())
+            view.setPadding(
+                systemBars.left, systemBars.top, systemBars.right, systemBars.bottom
+            )
+            insets
+        }
+    }
+
+    fun centeredScrollContent(
+        activity: Activity,
+        scroll: ScrollView,
+        spec: AdaptiveSpec,
+        maxReadingWidth: Boolean = false,
+    ): LinearLayout {
+        val content = column(activity, spec.innerPaddingDp)
+        val frame = FrameLayout(activity)
+        val width = if (maxReadingWidth) {
+            spec.contentWidthForReadingDp
+        } else {
+            spec.contentWidthDp
+        }
+        frame.addView(content, FrameLayout.LayoutParams(
+            dp(activity, width),
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP or Gravity.CENTER_HORIZONTAL,
+        ))
+        scroll.addView(frame, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        ))
+        return content
+    }
+
     fun dp(context: Context, value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
 
