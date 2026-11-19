@@ -80,7 +80,8 @@ class MainActivity : Activity() {
         heading("2. 테스트 모드 선택", 16f)
         val group = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
         val modes = listOf(
-            "동시 두 스트로크 (기본)" to MirrorMode.DUAL_STROKE,
+            "플로팅 썸 드래그·탭 (권장)" to MirrorMode.THUMB,
+            "동시 두 스트로크 (실험)" to MirrorMode.DUAL_STROKE,
             "순차 두 탭 (대안)" to MirrorMode.SEQUENTIAL,
             "접근성 노드 클릭 (제한형)" to MirrorMode.NODE_CLICK,
         )
@@ -96,6 +97,13 @@ class MainActivity : Activity() {
         group.check(radios.first().id)
         container.addView(group)
 
+        heading(
+            "썸 모드: 원형 조절점을 왼쪽 앱 버튼 위로 드래그하고 짧게 누르면 " +
+                "양쪽 테스트 앱에 순차 클릭합니다. 기존 화면 전체 터치를 가로채지 않습니다. " +
+                "썸을 0.65초 길게 눌러 영점 조절 메뉴를 열 수 있습니다. " +
+                "L/R 기준점을 같은 버튼에 맞춘 후 저장하거나 초기화할 수 있습니다.",
+            14f,
+        )
         button("3. 테스트 20초 시작 (창 준비 대기)") {
             val selected = modes[radios.indexOfFirst { it.id == group.checkedRadioButtonId }]
                 .second
@@ -115,8 +123,9 @@ class MainActivity : Activity() {
         heading("4. 두 테스트 앱을 좌우 분할로 열기", 16f)
         heading(
             "먼저 Test Left / Test Right APK 두 개를 설치하세요.\n" +
-                "Fold를 펼쳐 두 앱을 좌우 5:5로 배치한 뒤, 이 제어 앱에서 시작을 누르고 " +
-                "테스트 앱 두 개의 분할 화면으로 돌아가 왼쪽 버튼을 누릅니다.\n" +
+                "Fold를 펼쳐 두 앱을 좌우 5:5로 배치한 뒤, 제어 앱에서 시작을 누르고 " +
+                "두 테스트 앱의 분할 화면으로 돌아갑니다. 썸 모드는 원을 옮겨 탭하고, " +
+                "다른 실험 모드는 왼쪽 테스트 앱의 버튼을 직접 누릅니다.\n" +
                 "두 창의 카운터가 각각 1회씩 증가하는지 직접 확인합니다.\n" +
                 "20초 제한은 두 테스트 창이 모두 감지된 시점부터 적용합니다.",
             14f,

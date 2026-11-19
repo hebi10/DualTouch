@@ -76,4 +76,53 @@ class TouchGeometryTest {
             )
         )
     }
+    @Test fun calibrationChangesBothAxes() {
+        val correction = CalibrationMath.fromReferencePoints(
+            left,
+            right,
+            TapPoint(250f, 600f),
+            TapPoint(800f, 644.8f),
+        )
+        assertNotNull(correction)
+        val targetPoint = CoordinateMapper.map(
+            left, right, 250f, 600f, 24f, correction!!
+        )
+        assertNotNull(targetPoint)
+        assertEquals(800f, targetPoint!!.x, 0.01f)
+        assertEquals(644.8f, targetPoint.y, 0.05f)
+    }
+
+    @Test fun defaultCalibrationIsIdentity() {
+        assertEquals(
+            TapPoint(770f, 600f),
+            CoordinateMapper.map(left, right, 250f, 600f, 24f)
+        )
+    }
+
+    @Test fun rejectsExcessiveCalibration() {
+        assertNull(
+            CalibrationMath.fromReferencePoints(
+                left, right, TapPoint(100f, 400f), TapPoint(990f, 800f)
+            )
+        )
+    }
+
+    @Test fun rejectsInvalidOrOutOfRangeCalibration() {
+        assertNull(
+            CoordinateMapper.map(
+                left, right, 250f, 600f, 24f, CalibrationOffset(Float.NaN, 0f)
+            )
+        )
+        assertNull(
+            CoordinateMapper.map(
+                left, right, 450f, 600f, 24f, CalibrationOffset(0.2f, 0f)
+            )
+        )
+        assertNull(
+            CalibrationMath.fromReferencePoints(
+                left, right, TapPoint(-1f, 100f), TapPoint(770f, 600f)
+            )
+        )
+    }
+
 }

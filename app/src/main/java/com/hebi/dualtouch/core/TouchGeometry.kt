@@ -20,6 +20,37 @@ data class ScreenRect(
 
 data class TapPoint(val x: Float, val y: Float)
 
+data class CalibrationOffset(val dx: Float, val dy: Float) {
+    fun isSafe(): Boolean =
+        dx.isFinite() && dy.isFinite() &&
+            kotlin.math.abs(dx) <= 0.2f && kotlin.math.abs(dy) <= 0.2f
+
+    companion object {
+        val ZERO = CalibrationOffset(0f, 0f)
+    }
+}
+
+object CalibrationMath {
+    fun fromReferencePoints(
+        source: ScreenRect,
+        target: ScreenRect,
+        leftReference: TapPoint,
+        rightReference: TapPoint,
+    ): CalibrationOffset? {
+        if (!source.contains(leftReference.x, leftReference.y) ||
+            !target.contains(rightReference.x, rightReference.y)
+        ) return null
+
+        val sourceX = (leftReference.x - source.left) / source.width
+        val sourceY = (leftReference.y - source.top) / source.height
+        val targetX = (rightReference.x - target.left) / target.width
+        val targetY = (rightReference.y - target.top) / target.height
+        return CalibrationOffset(targetX - sourceX, targetY - sourceY)
+            .takeIf { it.isSafe() }
+    }
+}
+
+
 data class WindowSnapshot(val packageName: String, val bounds: ScreenRect)
 
 data class WindowPair(val left: WindowSnapshot, val right: WindowSnapshot)
@@ -63,14 +94,17 @@ object CoordinateMapper {
         x: Float,
         y: Float,
         safeInsetPx: Float,
+        calibration: CalibrationOffset = CalibrationOffset.ZERO,
     ): TapPoint? {
-        if (!source.isValid || !target.isValid || safeInsetPx < 0f) return null
+        if (!source.isValid || !target.isValid || safeInsetPx < 0f ||
+            !calibration.isSafe()
+        ) return null
         if (!source.contains(x, y, safeInsetPx)) return null
 
         val relativeX = (x - source.left) / source.width.toFloat()
         val relativeY = (y - source.top) / source.height.toFloat()
-        val targetX = target.left + relativeX * target.width
-        val targetY = target.top + relativeY * target.height
+        val targetX = target.left + (relativeX + calibration.dx) * target.width
+        val targetY = target.top + (relativeY + calibration.dy) * target.height
 
         return TapPoint(targetX, targetY)
             .takeIf { target.contains(it.x, it.y, safeInsetPx) }

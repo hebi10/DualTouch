@@ -14,6 +14,7 @@ import android.view.MotionEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import com.hebi.dualtouch.core.CalibrationOffset
 import com.hebi.dualtouch.core.CoordinateMapper
 import com.hebi.dualtouch.core.ScreenRect
 import com.hebi.dualtouch.core.TapPoint
@@ -23,6 +24,7 @@ import com.hebi.dualtouch.core.WindowSnapshot
 import kotlin.math.abs
 
 enum class MirrorMode {
+    THUMB,
     DUAL_STROKE,
     SEQUENTIAL,
     NODE_CLICK,
@@ -51,6 +53,29 @@ class TouchMirrorService : AccessibilityService() {
     private var downPoint: TapPoint? = null
     private var downTime: Long = 0L
     private var tapRequests = 0
+    private var activeWindowPair: com.hebi.dualtouch.core.WindowPair? = null
+    private var overlay: ThumbOverlayController? = null
+    private val calibrationPrefs by lazy { getSharedPreferences("thumb_zero_v1", MODE_PRIVATE) }
+
+    private fun currentCalibration(): CalibrationOffset {
+        val offset = CalibrationOffset(
+            calibrationPrefs.getFloat("dx", 0f),
+            calibrationPrefs.getFloat("dy", 0f),
+        )
+        return if (offset.isSafe()) offset else CalibrationOffset.ZERO
+    }
+
+    private fun saveCalibration(offset: CalibrationOffset) {
+        if (!offset.isSafe()) return
+        calibrationPrefs.edit().putFloat("dx", offset.dx)
+            .putFloat("dy", offset.dy).apply()
+        statusText = "영점 보정 저장됨. 양쪽 테스트 버튼으로 결과 확인."
+    }
+
+    private fun resetCalibration() {
+        calibrationPrefs.edit().clear().apply()
+        statusText = "영점 보정 초기화됨."
+    }
 
     var statusText: String = "서비스 대기"
         private set
@@ -78,6 +103,9 @@ class TouchMirrorService : AccessibilityService() {
         armed = true
         dispatching = false
         activeStarted = false
+        activeWindowPair = null
+        overlay?.hide()
+        overlay = null
         tapRequests = 0
         downPoint = null
         statusText = "왼쪽·오른쪽 테스트 앱 창을 기다리는 중 (60초 제한)"
@@ -91,6 +119,10 @@ class TouchMirrorService : AccessibilityService() {
     fun stop(message: String = "사용자 중지") {
         armed = false
         activeStarted = false
+        activeWindowPair = null
+        dispatching = false
+        overlay?.hide()
+        overlay = null
         downPoint = null
         handler.removeCallbacks(readyTimeout)
         handler.removeCallbacks(activeTimeout)
@@ -174,7 +206,11 @@ class TouchMirrorService : AccessibilityService() {
         tapRequests += 1
 
         if (source.packageName == TestPackages.RIGHT) {
-            replayGesture(listOf(touch), false)
+            if (mode == MirrorMode.THUMB) {
+                stop("썸 모드는 왼쪽 창 안에서만 실행할 수 있습니다.")
+            } else {
+                replayGesture(listOf(touch), false)
+            }
             return
         }
 
@@ -184,12 +220,14 @@ class TouchMirrorService : AccessibilityService() {
             touch.x,
             touch.y,
             safeInset,
+            currentCalibration(),
         ) ?: run {
             stop("좌표 변환이 안전 영역을 벗어났습니다.")
             return
         }
 
         when (mode) {
+            MirrorMode.THUMB -> replayGesture(listOf(touch, transformed), true)
             MirrorMode.DUAL_STROKE -> replayGesture(listOf(touch, transformed), false)
             MirrorMode.SEQUENTIAL -> replayGesture(listOf(touch, transformed), true)
             MirrorMode.NODE_CLICK -> {
@@ -258,6 +296,7 @@ class TouchMirrorService : AccessibilityService() {
             stop("Android 제스처 취소 또는 주입 실패")
         } else {
             statusText = "제스처 전송 $tapRequests 회. 양쪽 카운터로 실제 반응 확인."
+            overlay?.restoreAfterDispatch()
             refreshCapture()
         }
     }
@@ -298,13 +337,64 @@ class TouchMirrorService : AccessibilityService() {
             return
         }
 
+        if (activeStarted && activeWindowPair != pair) {
+            stop("분할 창의 위치·크기가 변경되어 자동 중지")
+            return
+        }
+
         if (!activeStarted) {
+            activeWindowPair = pair
             activeStarted = true
             handler.removeCallbacks(readyTimeout)
             handler.postDelayed(activeTimeout, ACTIVE_MS)
         }
-        setCapture(true)
-        statusText = "ACTIVE (최대 20초): 원탭만. 긴급 중지는 볼륨 아래."
+        if (mode == MirrorMode.THUMB) {
+            setCapture(false)
+            if (overlay == null) {
+                overlay = ThumbOverlayController(
+                    context = this,
+                    pairProvider = ::resolveTestWindows,
+                    onTap = ::handleThumbTap,
+                    onStop = { stop("썸 메뉴에서 사용자 종료") },
+                    onCalibrationSaved = ::saveCalibration,
+                    onCalibrationReset = ::resetCalibration,
+                )
+                if (overlay?.show(pair) != true) {
+                    stop("플로팅 썸 표시 실패")
+                    return
+                }
+            }
+            if (overlay?.isCalibrating != true) {
+                statusText = "썸 ACTIVE (20초). 드래그 후 탭, 길게 눌러 영점 조절."
+            }
+        } else {
+            setCapture(true)
+            statusText = "ACTIVE (최대 20초): 원탭만. 긴급 중지는 볼륨 아래."
+        }
+    }
+
+    private fun handleThumbTap(touch: TapPoint) {
+        if (!armed || !activeStarted || dispatching || mode != MirrorMode.THUMB ||
+            overlay?.isCalibrating == true
+        ) return
+        val pair = resolveTestWindows()
+        if (pair == null || pair != activeWindowPair ||
+            !pair.left.bounds.contains(touch.x, touch.y, 24f)
+        ) {
+            statusText = "왼쪽 테스트 앱 안쪽 버튼 위치로 썸을 이동하세요."
+            return
+        }
+
+        overlay?.hideForDispatch()
+        dispatching = true
+        handler.postDelayed({
+            if (!armed) return@postDelayed
+            if (resolveTestWindows() != activeWindowPair) {
+                stop("분할 화면 변경으로 입력 취소")
+            } else {
+                handleTap(touch)
+            }
+        }, 90L)
     }
 
     private fun resolveTestWindows(): com.hebi.dualtouch.core.WindowPair? {
