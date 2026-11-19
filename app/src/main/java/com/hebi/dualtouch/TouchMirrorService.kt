@@ -128,8 +128,8 @@ class TouchMirrorService : AccessibilityService() {
                 downTime = SystemClock.uptimeMillis()
                 val pair = resolveTestWindows()
                 if (pair == null ||
-                    (!pair.first.bounds.contains(point.x, point.y, 24f) &&
-                        !pair.second.bounds.contains(point.x, point.y, 24f))
+                    (!pair.left.bounds.contains(point.x, point.y, 24f) &&
+                        !pair.right.bounds.contains(point.x, point.y, 24f))
                 ) {
                     stop("테스트 창 바깥 터치로 안전 중지")
                 }
@@ -164,8 +164,8 @@ class TouchMirrorService : AccessibilityService() {
         }
         val safeInset = 24f
         val source = when {
-            pair.first.bounds.contains(touch.x, touch.y, safeInset) -> pair.first
-            pair.second.bounds.contains(touch.x, touch.y, safeInset) -> pair.second
+            pair.left.bounds.contains(touch.x, touch.y, safeInset) -> pair.left
+            pair.right.bounds.contains(touch.x, touch.y, safeInset) -> pair.right
             else -> {
                 stop("테스트 입력 범위 이탈")
                 return
@@ -179,8 +179,8 @@ class TouchMirrorService : AccessibilityService() {
         }
 
         val transformed = CoordinateMapper.map(
-            pair.first.bounds,
-            pair.second.bounds,
+            pair.left.bounds,
+            pair.right.bounds,
             touch.x,
             touch.y,
             safeInset,
