@@ -1,0 +1,44 @@
+name: Android PoC CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Kotlin unit tests and debug APKs
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Android platform 35
+        run: sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+      - name: Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Unit tests and debug builds
+        run: gradle --no-daemon :app:testDebugUnitTest :app:assembleDebug :probe-left:assembleDebug :probe-right:assembleDebug
+      - name: Upload un-signed debug test APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-dt002-debug-apks
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            probe-left/build/outputs/apk/debug/*.apk
+            probe-right/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7

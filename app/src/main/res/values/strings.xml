@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">DualTouch POC</string>
+    <string name="service_label">DualTouch 실험 서비스</string>
+    <string name="service_description">두 개의 DualTouch 테스트 앱에서만 사용자의 수동 터치를 실험적으로 재생합니다. 원본 입력이 가로채질 수 있습니다. 볼륨 아래 버튼으로 즉시 중지할 수 있습니다.</string>
+</resources>

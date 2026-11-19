@@ -1,0 +1,14 @@
+# DualTouch 프로젝트 개발 규칙
+
+- 현재 목적은 DT-002 실험입니다. 실제 Fold 실기기 검증 없이는 범용 터치 동기화 성공/QA 통과로 표기하지 않습니다.
+- Kotlin Android 네이티브, 최소 의존성. 초기 POC는 Android API 34 이상, Gradle 8.11.1, AGP 8.9.2 기준입니다.
+- `:app`에서 **오직** `com.hebi.dualtouch.probeleft`와 `com.hebi.dualtouch.proberight` 앱 창으로만 입력을 전달합니다. 대상 범위를 확대하지 마세요.
+- 모든 터치/화면 수집은 기기 내부에서만 처리합니다. 사용자 화면·문자열·좌표·계정정보를 영구 저장하거나 외부 전송하지 마세요. 비밀키/토큰/환경값을 출력하지 마세요.
+- 접근성 권한은 명시적 고지와 사용자 수동 설정을 거쳐야 합니다. 접근성 기능을 장애 지원 목적이라고 허위 표시하지 않습니다.
+- 기본 OFF, 20초 자동 종료, 창 변화·다중 터치·드래그에서 중지, 하드웨어 볼륨 아래 긴급 중지 유지. 안전 동작을 임의 제거하지 마세요.
+- Android `dispatchGesture`가 원본 제스처를 취소할 수 있으며 `onMotionEvent` 수신 입력이 원래 대상에 전달되지 않음을 전제로 합니다.
+- 매 PR: 코드 검토·Gradle 디버그 빌드·단위 테스트·정적 검사. 장시간 전수 계측은 배치 최종 병합 후 고정 main SHA에 1회(단, 고위험 변경은 병합 전 필수 기기 검증 별도).
+- PR CI, main CI, Fold 실기기 계측은 서로 다른 증빙입니다. 미실행 결과를 성공으로 선언하지 않습니다.
+- 기획·디자인·상세 작업·QA 기록은 Drive의 [DualTouch 폴더](https://drive.google.com/drive/folders/1gjHbAYchTkREFH5ZHHVxLSXOFtDCOkje)에 작업키 DT-xxx로 기록합니다.
+- 서명 AAB 생성 / Play 내부 테스트 / Play 비공개 테스트 승격 / production은 **각각** 별도 사용자 승인 필요. 일반 커밋/PR/main 빌드에서 Play 자동 게시 금지.
+- APK·AAB·빌드 ZIP은 Drive에서 앱별 전체 10개 이내. 오래된 빌드 삭제는 별도 승인. 기존 설계·동작과 무관한 리팩터링 금지.
