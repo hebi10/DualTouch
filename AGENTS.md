@@ -12,3 +12,11 @@
 - 기획·디자인·상세 작업·QA 기록은 Drive의 [DualTouch 폴더](https://drive.google.com/drive/folders/1gjHbAYchTkREFH5ZHHVxLSXOFtDCOkje)에 작업키 DT-xxx로 기록합니다.
 - 서명 AAB 생성 / Play 내부 테스트 / Play 비공개 테스트 승격 / production은 **각각** 별도 사용자 승인 필요. 일반 커밋/PR/main 빌드에서 Play 자동 게시 금지.
 - APK·AAB·빌드 ZIP은 Drive에서 앱별 전체 10개 이내. 오래된 빌드 삭제는 별도 승인. 기존 설계·동작과 무관한 리팩터링 금지.
+
+## DT-004~009 개발 규칙
+- 접근성 입력·Thumb 표시 전 인앱 명시적 동의와 Android 사용자 수동 권한 허용을 확인합니다. 동의 철회 시 입력과 오버레이를 중지합니다.
+- Test Left/Right 두 대상 창의 동일 디스플레이·분할/포커스 조건을 검사하고 키보드·외부 앱·큰 시스템 팝업/타사 접근성 오버레이에서는 fail-closed 처리합니다.
+- `dispatchGesture` 실행 전마다 창/세션을 검사하고 중지·메뉴 열기·20초 제한·화면 변화·서비스 종료에서는 세션 토큰을 무효화해 대기 중 두 번째 탭을 차단합니다.
+- 화면 OFF·회전·Fold 상태 변화·서비스 해제 시 OFF. 프로세스 재연결 후 ACTIVE 자동 복원 금지.
+- 입력/화면 내용 로그·서버 전송 금지, Google Play 업로드 금지. 기존 Test Left/Right 전용 범위 확장 금지.
+- PR에서 lintDebug, Kotlin 단위 테스트, 디버그 APK 3개 빌드와 Manifest 위험 권한 검사를 실행합니다. Fold 실기기 입력 성공은 전체 개발 후 QA까지 보류합니다.

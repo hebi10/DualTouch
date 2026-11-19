@@ -92,6 +92,12 @@ class AppearanceSettings(context: Context) {
         save(TouchAppearance())
     }
 
+    var accessibilityDisclosureAccepted: Boolean
+        get() = preferences.getBoolean("accessibility_disclosure_accepted", false)
+        set(value) {
+            preferences.edit().putBoolean("accessibility_disclosure_accepted", value).apply()
+        }
+
     var onboardingRead: Boolean
         get() = preferences.getBoolean("onboarding_read", false)
         set(value) { preferences.edit().putBoolean("onboarding_read", value).apply() }

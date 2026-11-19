@@ -10,6 +10,7 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -155,7 +156,7 @@ class MainActivity : Activity() {
         return if (service == null) {
             "접근성 권한 필요 · 플로팅 OFF"
         } else {
-            service.statusText
+            "${service.phase.description} · ${service.statusText}"
         }
     }
 
@@ -220,6 +221,7 @@ class MainActivity : Activity() {
         floatingButton = addAction(floatingButtonLabel(), top = 14) {
             val currentService = TouchMirrorService.current
             when {
+                !settings.accessibilityDisclosureAccepted -> go(Page.PERMISSION)
                 currentService == null -> go(Page.PERMISSION)
                 currentService.isFloatingVisible -> {
                     currentService.hideFloatingControl()
@@ -269,8 +271,25 @@ class MainActivity : Activity() {
         card("사용 범위",
             "현재 기술 검증은 Test Left 및 Test Right 두 앱으로 제한됩니다. " +
                 "Android가 실제 원본 터치를 취소할 수 있습니다.")
-        addAction("Android 접근성 설정 열기", top = 22) {
+        card("사용자 동의 안내",
+            "터치 이벤트는 Android의 입력 흐름에 영향을 주며, 원래 앱으로 전달되지 않을 수 있습니다. " +
+                "테스트 앱에서만 기능을 사용하고 볼륨 아래 키로 즉시 중단할 수 있습니다.",
+            top = 16)
+        val accepted = CheckBox(this).apply {
+            text = "접근성 서비스가 터치를 수신하고 가상 터치를 실행하는 목적·위험을 이해했으며 동의합니다."
+            textSize = 14f
+            setTextColor(palette.text)
+            isChecked = settings.accessibilityDisclosureAccepted
+            minHeight = UiKit.dp(this@MainActivity, 52)
+        }
+        UiKit.add(root, accepted, topDp = 20)
+        val configure = addAction("동의하고 Android 접근성 설정 열기", top = 12) {
+            settings.accessibilityDisclosureAccepted = true
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        }
+        configure.isEnabled = accepted.isChecked
+        accepted.setOnCheckedChangeListener { _, checked ->
+            configure.isEnabled = checked
         }
         addAction("권한 없이 돌아가기", false) { go(Page.HOME) }
     }
@@ -301,6 +320,7 @@ class MainActivity : Activity() {
         addAction("선택 실험 시작", top = 20) {
             val service = TouchMirrorService.current
             when {
+                !settings.accessibilityDisclosureAccepted -> go(Page.PERMISSION)
                 service == null -> go(Page.PERMISSION)
                 service.startExperiment(chosenMode) -> go(Page.HOME)
                 else -> go(Page.HELP)

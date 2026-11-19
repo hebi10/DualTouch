@@ -126,6 +126,19 @@ class SettingsActivity : Activity() {
         }
         UiKit.add(root, reset, topDp = 12, bottomDp = 28)
         root = pageRoot
+        UiKit.add(root, UiKit.sectionHeader(this, palette, "권한 및 개인정보"), topDp = 24)
+        UiKit.add(root, UiKit.text(this, palette,
+            "동의를 철회해도 Android 시스템에 허용한 접근성 권한은 자동으로 해제되지 않습니다. " +
+                "여기에서 즉시 입력과 플로팅을 중단하고, 필요하면 시스템 접근성 설정에서도 서비스를 끄세요.",
+            13f, secondary = true), topDp = 8)
+        val revoke = UiKit.action(this, palette, "접근성 사용 동의 철회", false)
+        revoke.setOnClickListener {
+            store.accessibilityDisclosureAccepted = false
+            TouchMirrorService.current?.hideFloatingControl()
+            finish()
+        }
+        UiKit.add(root, revoke, topDp = 12, bottomDp = 24)
+        root = pageRoot
         scroll.post { scroll.scrollTo(0, scrollTo) }
     }
 

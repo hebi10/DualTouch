@@ -51,7 +51,7 @@ object CalibrationMath {
 }
 
 
-data class WindowSnapshot(val packageName: String, val bounds: ScreenRect)
+data class WindowSnapshot(val packageName: String, val bounds: ScreenRect, val displayId: Int = 0)
 
 data class WindowPair(val left: WindowSnapshot, val right: WindowSnapshot)
 
@@ -108,7 +108,7 @@ object WindowPairResolver {
 
         val a = left.single()
         val b = right.single()
-        if (!a.bounds.isValid || !b.bounds.isValid) return null
+        if (!a.bounds.isValid || !b.bounds.isValid || a.displayId != b.displayId) return null
         if (a.bounds.right > b.bounds.left) return null
 
         val verticalOverlap =
