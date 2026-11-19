@@ -46,7 +46,16 @@ class TouchMirrorService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
     private val readyTimeout = Runnable { stop("테스트 창 준비 시간이 초과되었습니다.") }
-    private val activeTimeout = Runnable { stop("20초 실험 시간이 끝났습니다.") }
+    private val activeTimeout = Runnable {
+        if (mode == MirrorMode.THUMB) {
+            thumbRunning = false
+            setCapture(false)
+            downPoint = null
+            statusText = "20초 자동 중지 · Thumb는 표시 중"
+        } else {
+            stop("20초 실험 시간이 끝났습니다.")
+        }
+    }
 
     private var armed = false
     private var capturing = false
@@ -95,21 +104,23 @@ class TouchMirrorService : AccessibilityService() {
     }
 
     private fun setThumbRunning(enabled: Boolean) {
-        if (mode != MirrorMode.THUMB || !armed || !activeStarted) return
+        if (mode != MirrorMode.THUMB || !armed) return
         val pair = resolveTestWindows()
-        if (pair == null || pair != activeWindowPair) {
-            stop("분할 창 변경으로 중단")
+        if (enabled && (pair == null || (activeStarted && pair != activeWindowPair))) {
+            thumbRunning = false
+            setCapture(false)
+            statusText = "실행 전 Test Left / Test Right를 좌우 분할로 열어주세요."
             return
         }
         thumbRunning = enabled
         handler.removeCallbacks(activeTimeout)
-        handler.removeCallbacks(readyTimeout)
         if (enabled) {
             handler.postDelayed(activeTimeout, ACTIVE_MS)
-            statusText = "실행 중: ${if (sourceSide == TouchSide.LEFT) "좌 → 우" else "우 → 좌"} / 20초 자동 중지"
+            statusText = "실행 중 · 20초 자동 중지 · 긴급 중지는 볼륨 아래"
         } else {
-            handler.postDelayed(readyTimeout, READY_WAIT_MS)
-            statusText = "중지: Thumb에서 실행 또는 방향·영점 조절 선택"
+            setCapture(false)
+            downPoint = null
+            statusText = "입력 중지 · Thumb는 계속 표시"
         }
         refreshCapture()
     }
@@ -149,6 +160,68 @@ class TouchMirrorService : AccessibilityService() {
         private set
 
     val isArmed: Boolean get() = armed
+    val isFloatingVisible: Boolean get() =
+        armed && mode == MirrorMode.THUMB && overlay != null
+
+    fun refreshFloatingAppearance() {
+        overlay?.updateAppearance()
+    }
+
+    fun hideFloatingControl() {
+        stop("사용자가 플로팅 숨김")
+    }
+
+    fun showFloatingControl(): Boolean {
+        if (isFloatingVisible) return true
+        if (armed) stop("이전 기술 실험 종료")
+        mode = MirrorMode.THUMB
+        sourceSide = runCatching {
+            TouchSide.valueOf(
+                calibrationPrefs.getString("source_side", TouchSide.LEFT.name)
+                    ?: TouchSide.LEFT.name
+            )
+        }.getOrDefault(TouchSide.LEFT)
+        armed = true
+        thumbRunning = false
+        menuPaused = false
+        dispatching = false
+        activeStarted = false
+        activeWindowPair = null
+        downPoint = null
+        tapRequests = 0
+        setCapture(false)
+        handler.removeCallbacks(activeTimeout)
+        handler.removeCallbacks(readyTimeout)
+        val shown = ensureThumbOverlay()
+        if (!shown) {
+            stop("플로팅 Thumb 생성 실패")
+            return false
+        }
+        statusText = "플로팅 표시됨 · Thumb를 눌러 실행·중지 / 좌·우 / 영점 조절"
+        refreshCapture()
+        return true
+    }
+
+    private fun ensureThumbOverlay(): Boolean {
+        if (overlay != null) return true
+        overlay = ThumbOverlayController(
+            context = this,
+            pairProvider = ::resolveTestWindows,
+            sideProvider = { sourceSide },
+            runningProvider = { thumbRunning },
+            calibrationProvider = { currentCalibration() },
+            onRunToggle = ::toggleThumbRunning,
+            onSideToggle = ::toggleTouchSide,
+            onCalibrationStart = ::prepareCalibration,
+            onCalibrationSaved = ::saveCalibration,
+            onCalibrationReset = ::resetCalibration,
+            onMenuVisibilityChanged = ::setMenuVisible,
+        )
+        if (overlay?.show(resolveTestWindows()) == true) return true
+        overlay?.hide()
+        overlay = null
+        return false
+    }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
@@ -166,6 +239,7 @@ class TouchMirrorService : AccessibilityService() {
     }
 
     fun startExperiment(selectedMode: MirrorMode): Boolean {
+        if (selectedMode == MirrorMode.THUMB) return showFloatingControl()
         if (armed) return false
         mode = selectedMode
         sourceSide = runCatching {
@@ -436,6 +510,47 @@ class TouchMirrorService : AccessibilityService() {
     private fun refreshCapture() {
         if (!armed || dispatching) return
         val pair = resolveTestWindows()
+
+        if (mode == MirrorMode.THUMB) {
+            if (!ensureThumbOverlay()) {
+                stop("플로팅 Thumb 생성 실패")
+                return
+            }
+            if (pair == null) {
+                if (thumbRunning) {
+                    thumbRunning = false
+                    handler.removeCallbacks(activeTimeout)
+                }
+                activeStarted = false
+                activeWindowPair = null
+                downPoint = null
+                setCapture(false)
+                statusText = "Thumb 표시 중 · 두 테스트 앱의 좌우 분할 대기"
+                return
+            }
+
+            if (activeStarted && activeWindowPair != pair) {
+                if (thumbRunning) {
+                    stop("분할 창 위치·크기 변경으로 입력 중지")
+                    return
+                }
+                overlay?.updateSourceSide()
+            }
+            if (!activeStarted) overlay?.updateSourceSide()
+            activeStarted = true
+            activeWindowPair = pair
+            setCapture(thumbRunning && !menuPaused && overlay?.isCalibrating != true)
+            statusText = when {
+                overlay?.isCalibrating == true ->
+                    "영점 편집 중 · 직접 기준점과 자동 기준점 정렬"
+                thumbRunning ->
+                    "실행 중: ${if (sourceSide == TouchSide.LEFT) "좌 → 우" else "우 → 좌"} · 20초 자동 중지"
+                else ->
+                    "Thumb 표시 중 · 메뉴에서 실행·중지 / 좌·우 / 영점"
+            }
+            return
+        }
+
         if (pair == null) {
             if (activeStarted) {
                 stop("화면 분할 또는 대상 앱 변경")
@@ -444,54 +559,18 @@ class TouchMirrorService : AccessibilityService() {
             }
             return
         }
-
         if (activeStarted && activeWindowPair != pair) {
             stop("분할 창의 위치·크기가 변경되어 자동 중지")
             return
         }
-
         if (!activeStarted) {
             activeWindowPair = pair
             activeStarted = true
             handler.removeCallbacks(readyTimeout)
-            if (mode == MirrorMode.THUMB) {
-                handler.postDelayed(readyTimeout, READY_WAIT_MS)
-            } else {
-                handler.postDelayed(activeTimeout, ACTIVE_MS)
-            }
+            handler.postDelayed(activeTimeout, ACTIVE_MS)
         }
-
-        if (mode == MirrorMode.THUMB) {
-            if (overlay == null) {
-                setCapture(false)
-                overlay = ThumbOverlayController(
-                    context = this,
-                    pairProvider = ::resolveTestWindows,
-                    sideProvider = { sourceSide },
-                    runningProvider = { thumbRunning },
-                    calibrationProvider = { currentCalibration() },
-                    onRunToggle = ::toggleThumbRunning,
-                    onSideToggle = ::toggleTouchSide,
-                    onCalibrationStart = ::prepareCalibration,
-                    onCalibrationSaved = ::saveCalibration,
-                    onCalibrationReset = ::resetCalibration,
-                    onMenuVisibilityChanged = ::setMenuVisible,
-                )
-                if (overlay?.show(pair) != true) {
-                    stop("플로팅 Thumb 표시 실패")
-                    return
-                }
-            }
-            setCapture(thumbRunning && !menuPaused && overlay?.isCalibrating != true)
-            statusText = when {
-                overlay?.isCalibrating == true -> "영점 조절 중: 빨강은 두 점 이동, 흰색은 단독 이동"
-                thumbRunning -> "실행 중: ${if (sourceSide == TouchSide.LEFT) "좌 → 우" else "우 → 좌"} · 볼륨 아래 중지"
-                else -> "Thumb를 눌러 실행·중지 / 좌·우 선택 / 영점 조절"
-            }
-        } else {
-            setCapture(true)
-            statusText = "ACTIVE (최대 20초): 원탭만. 긴급 중지는 볼륨 아래."
-        }
+        setCapture(true)
+        statusText = "ACTIVE (최대 20초): 원탭만. 긴급 중지는 볼륨 아래."
     }
 
     private fun resolveTestWindows(): com.hebi.dualtouch.core.WindowPair? {

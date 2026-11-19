@@ -47,6 +47,7 @@ internal class ThumbOverlayController(
     )
 
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val appearanceSettings = AppearanceSettings(context)
     private var thumb: Marker? = null
     private var menu: LinearLayout? = null
     private var red: Marker? = null
@@ -57,20 +58,27 @@ internal class ThumbOverlayController(
     val isCalibrating: Boolean get() = calibrating
     val isMenuOpen: Boolean get() = menu != null
 
-    fun show(pair: WindowPair): Boolean {
+    fun show(pair: WindowPair?): Boolean {
         if (thumb != null) return true
-        val source = pair.source(sideProvider()).bounds
-        val size = dp(52)
-        val view = circle("◎", Color.rgb(32, 32, 32), Color.WHITE, size, Color.WHITE)
-        view.contentDescription = "DualTouch 썸. 누르면 실행·중지, 방향, 영점 조절 메뉴"
-        val layout = params(size, size,
-            source.left + dp(12),
-            source.top + dp(108))
-        configureDrag(view, layout, onMove = { x, y ->
-            val bounds = windowManager.currentWindowMetrics.bounds
+        val appearance = appearanceSettings.get()
+        val bounds = windowManager.currentWindowMetrics.bounds
+        val source = pair?.source(sideProvider())?.bounds
+        val size = dp(appearance.thumbSizeDp)
+        val x = source?.left?.plus(dp(12)) ?: bounds.left + dp(24)
+        val y = source?.top?.plus(dp(108)) ?: bounds.top + dp(150)
+        val view = circle("◎", appearance.thumbColor,
+            AppearanceRules.readableTextColor(appearance.thumbColor),
+            size, Color.WHITE)
+        view.alpha = appearance.thumbOpacityPercent / 100f
+        view.contentDescription = "DualTouch 썸. 누르면 실행·중지, 좌우 방향, 영점 조절 메뉴"
+        val layout = params(size, size, x, y)
+        configureDrag(view, layout, onMove = { nextX, nextY ->
+            val screen = windowManager.currentWindowMetrics.bounds
             move(Marker(view, layout),
-                x.coerceIn(bounds.left, (bounds.right - size).coerceAtLeast(bounds.left)),
-                y.coerceIn(bounds.top, (bounds.bottom - size).coerceAtLeast(bounds.top)))
+                nextX.coerceIn(screen.left,
+                    (screen.right - layout.width).coerceAtLeast(screen.left)),
+                nextY.coerceIn(screen.top,
+                    (screen.bottom - layout.height).coerceAtLeast(screen.top)))
         }, onTap = { toggleMenu() })
         return try {
             windowManager.addView(view, layout)
@@ -78,6 +86,53 @@ internal class ThumbOverlayController(
             true
         } catch (_: RuntimeException) {
             false
+        }
+    }
+
+    fun updateAppearance() {
+        val appearance = appearanceSettings.get()
+        thumb?.let {
+            updateMarkerAppearance(it, appearance.thumbSizeDp,
+                appearance.thumbColor, appearance.thumbOpacityPercent, "◎")
+        }
+        red?.let {
+            updateMarkerAppearance(it, appearance.markerSizeDp,
+                appearance.directColor, appearance.markerOpacityPercent, "터치")
+        }
+        white?.let {
+            updateMarkerAppearance(it, appearance.markerSizeDp,
+                appearance.automaticColor, appearance.markerOpacityPercent, "자동")
+        }
+    }
+
+    private fun updateMarkerAppearance(
+        marker: Marker,
+        sizeDp: Int,
+        fill: Int,
+        opacityPercent: Int,
+        label: String,
+    ) {
+        val size = dp(sizeDp)
+        val oldX = marker.layout.x + marker.layout.width / 2
+        val oldY = marker.layout.y + marker.layout.height / 2
+        marker.layout.width = size
+        marker.layout.height = size
+        marker.layout.x = oldX - size / 2
+        marker.layout.y = oldY - size / 2
+        marker.view.minWidth = size
+        marker.view.minHeight = size
+        marker.view.setTextColor(AppearanceRules.readableTextColor(fill))
+        marker.view.alpha = opacityPercent / 100f
+        marker.view.background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(fill)
+            setStroke(dp(2), if (fill == Color.WHITE) Color.DKGRAY else Color.WHITE)
+        }
+        marker.view.textSize = if (label == "◎") 28f else 12f
+        try {
+            windowManager.updateViewLayout(marker.view, marker.layout)
+        } catch (_: RuntimeException) {
+            // The service may stop while a setting is being changed.
         }
     }
 
@@ -95,10 +150,17 @@ internal class ThumbOverlayController(
     }
 
     fun updateSourceSide() {
-        val pair = pairProvider() ?: return
         val marker = thumb ?: return
-        val source = pair.source(sideProvider()).bounds
-        move(marker, source.left + dp(12), source.top + dp(108))
+        val pair = pairProvider()
+        val source = pair?.source(sideProvider())?.bounds
+        val bounds = windowManager.currentWindowMetrics.bounds
+        val x = source?.left?.plus(dp(12)) ?: if (sideProvider() == TouchSide.LEFT) {
+            bounds.left + dp(24)
+        } else {
+            bounds.right - marker.layout.width - dp(24)
+        }
+        val y = source?.top?.plus(dp(108)) ?: bounds.top + dp(150)
+        move(marker, x, y)
     }
 
     fun hideForDispatch() {
@@ -177,8 +239,11 @@ internal class ThumbOverlayController(
             return
         }
 
-        red = createMarker(startRed, "터치", Color.rgb(198, 40, 40), Color.WHITE, Color.WHITE)
-        white = createMarker(startWhite, "자동", Color.WHITE, Color.BLACK, Color.DKGRAY)
+        val a = appearanceSettings.get()
+        red = createMarker(startRed, "터치", a.directColor,
+            AppearanceRules.readableTextColor(a.directColor), Color.WHITE)
+        white = createMarker(startWhite, "자동", a.automaticColor,
+            AppearanceRules.readableTextColor(a.automaticColor), Color.DKGRAY)
         if (red == null || white == null) {
             endCalibration()
             return
@@ -279,8 +344,10 @@ internal class ThumbOverlayController(
         foreground: Int,
         border: Int,
     ): Marker? {
-        val size = dp(52)
+        val a = appearanceSettings.get()
+        val size = dp(a.markerSizeDp)
         val view = circle(label, background, foreground, size, border)
+        view.alpha = a.markerOpacityPercent / 100f
         view.textSize = 12f
         view.contentDescription = if (background == Color.WHITE) {
             "자동 터치 흰색 보정점. 드래그하면 흰색만 움직입니다"
@@ -441,7 +508,10 @@ internal class ThumbOverlayController(
             this.y = y
         }
 
-    private fun safeInsetPx() = max(dp(26), dp(52) / 2 + dp(4)).toFloat()
+    private fun safeInsetPx(): Float {
+        val size = appearanceSettings.get().markerSizeDp
+        return max(dp(26), dp(size) / 2 + dp(4)).toFloat()
+    }
 
     private fun dp(value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
