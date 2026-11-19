@@ -69,7 +69,7 @@ class MainActivity : Activity() {
 
     private fun render() {
         val scroll = ScrollView(this).apply {
-            fillViewport = true
+            isFillViewport = true
             setBackgroundColor(palette.background)
         }
         root = UiKit.column(this, 20)

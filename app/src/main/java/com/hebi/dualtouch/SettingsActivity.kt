@@ -32,7 +32,7 @@ class SettingsActivity : Activity() {
     private fun render(scrollTo: Int = 0) {
         scroll = ScrollView(this).apply {
             setBackgroundColor(palette.background)
-            fillViewport = true
+            isFillViewport = true
         }
         root = UiKit.column(this, 20)
         scroll.addView(root)
