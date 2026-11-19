@@ -125,4 +125,58 @@ class TouchGeometryTest {
         )
     }
 
+    @Test fun redDragMovesRedAndWhiteWithUnchangedOffset() {
+        val offset = CalibrationOffset(0.06f, -0.025f)
+        val moved = ThumbReferenceMotion.moveSourceTogether(
+            left, right, TapPoint(300f, 600f), offset, 24f
+        )
+        assertNotNull(moved)
+        assertEquals(TapPoint(300f, 600f), moved!!.first)
+        assertEquals(TapPoint(850f, 572f), moved.second)
+        assertEquals(
+            offset,
+            ThumbReferenceMotion.moveAutomaticOnly(
+                left, right, moved.first, moved.second, 24f
+            )
+        )
+    }
+
+    @Test fun whiteDragChangesOnlyCalibrationWhileRedRemainsFixed() {
+        val red = TapPoint(300f, 600f)
+        val offset = ThumbReferenceMotion.moveAutomaticOnly(
+            left, right, red, TapPoint(855f, 600f), 24f
+        )
+        assertEquals(CalibrationOffset(0.07f, 0f), offset)
+        val corrected = ThumbReferenceMotion.moveSourceTogether(
+            left, right, red, offset!!, 24f
+        )
+        assertEquals(red, corrected!!.first)
+        assertEquals(TapPoint(855f, 600f), corrected.second)
+    }
+
+    @Test fun switchingSideReversesSourceAndTargetWindows() {
+        val pair = WindowPair(
+            WindowSnapshot(TestPackages.LEFT, left),
+            WindowSnapshot(TestPackages.RIGHT, right)
+        )
+        assertEquals(TestPackages.LEFT, pair.source(TouchSide.LEFT).packageName)
+        assertEquals(TestPackages.RIGHT, pair.target(TouchSide.LEFT).packageName)
+        assertEquals(TestPackages.RIGHT, pair.source(TouchSide.RIGHT).packageName)
+        assertEquals(TestPackages.LEFT, pair.target(TouchSide.RIGHT).packageName)
+
+        val reverse = ThumbReferenceMotion.moveSourceTogether(
+            right, left, TapPoint(770f, 600f), CalibrationOffset.ZERO, 24f
+        )
+        assertEquals(TapPoint(250f, 600f), reverse!!.second)
+    }
+
+    @Test fun redAndWhiteCannotBeDraggedIntoUnsafeAreas() {
+        assertNull(ThumbReferenceMotion.moveSourceTogether(
+            left, right, TapPoint(10f, 600f), CalibrationOffset.ZERO, 24f
+        ))
+        assertNull(ThumbReferenceMotion.moveAutomaticOnly(
+            left, right, TapPoint(250f, 600f), TapPoint(999f, 600f), 24f
+        ))
+    }
+
 }

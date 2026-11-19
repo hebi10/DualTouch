@@ -19,6 +19,9 @@ import com.hebi.dualtouch.core.CoordinateMapper
 import com.hebi.dualtouch.core.ScreenRect
 import com.hebi.dualtouch.core.TapPoint
 import com.hebi.dualtouch.core.TestPackages
+import com.hebi.dualtouch.core.TouchSide
+import com.hebi.dualtouch.core.source
+import com.hebi.dualtouch.core.target
 import com.hebi.dualtouch.core.WindowPairResolver
 import com.hebi.dualtouch.core.WindowSnapshot
 import kotlin.math.abs
@@ -55,26 +58,91 @@ class TouchMirrorService : AccessibilityService() {
     private var tapRequests = 0
     private var activeWindowPair: com.hebi.dualtouch.core.WindowPair? = null
     private var overlay: ThumbOverlayController? = null
+    private var sourceSide = TouchSide.LEFT
+    private var thumbRunning = false
+    private var menuPaused = false
     private val calibrationPrefs by lazy { getSharedPreferences("thumb_zero_v1", MODE_PRIVATE) }
 
-    private fun currentCalibration(): CalibrationOffset {
+    private fun calibrationKey(side: TouchSide): String =
+        if (side == TouchSide.LEFT) "left" else "right"
+
+    private fun currentCalibration(side: TouchSide = sourceSide): CalibrationOffset {
+        val prefix = calibrationKey(side)
         val offset = CalibrationOffset(
-            calibrationPrefs.getFloat("dx", 0f),
-            calibrationPrefs.getFloat("dy", 0f),
+            calibrationPrefs.getFloat("${prefix}_dx", 0f),
+            calibrationPrefs.getFloat("${prefix}_dy", 0f)
         )
         return if (offset.isSafe()) offset else CalibrationOffset.ZERO
     }
 
     private fun saveCalibration(offset: CalibrationOffset) {
         if (!offset.isSafe()) return
-        calibrationPrefs.edit().putFloat("dx", offset.dx)
-            .putFloat("dy", offset.dy).apply()
-        statusText = "영점 보정 저장됨. 양쪽 테스트 버튼으로 결과 확인."
+        val prefix = calibrationKey(sourceSide)
+        calibrationPrefs.edit()
+            .putFloat("${prefix}_dx", offset.dx)
+            .putFloat("${prefix}_dy", offset.dy)
+            .apply()
+        statusText = "영점 저장됨 (선택 방향에만 적용)."
     }
 
     private fun resetCalibration() {
-        calibrationPrefs.edit().clear().apply()
-        statusText = "영점 보정 초기화됨."
+        val prefix = calibrationKey(sourceSide)
+        calibrationPrefs.edit()
+            .remove("${prefix}_dx")
+            .remove("${prefix}_dy")
+            .apply()
+        statusText = "선택 방향의 영점이 초기화되었습니다."
+    }
+
+    private fun setThumbRunning(enabled: Boolean) {
+        if (mode != MirrorMode.THUMB || !armed || !activeStarted) return
+        val pair = resolveTestWindows()
+        if (pair == null || pair != activeWindowPair) {
+            stop("분할 창 변경으로 중단")
+            return
+        }
+        thumbRunning = enabled
+        handler.removeCallbacks(activeTimeout)
+        handler.removeCallbacks(readyTimeout)
+        if (enabled) {
+            handler.postDelayed(activeTimeout, ACTIVE_MS)
+            statusText = "실행 중: ${if (sourceSide == TouchSide.LEFT) "좌 → 우" else "우 → 좌"} / 20초 자동 중지"
+        } else {
+            handler.postDelayed(readyTimeout, READY_WAIT_MS)
+            statusText = "중지: Thumb에서 실행 또는 방향·영점 조절 선택"
+        }
+        refreshCapture()
+    }
+
+    private fun toggleThumbRunning() {
+        setThumbRunning(!thumbRunning)
+    }
+
+    private fun toggleTouchSide() {
+        if (mode != MirrorMode.THUMB || !armed) return
+        setThumbRunning(false)
+        sourceSide = if (sourceSide == TouchSide.LEFT) TouchSide.RIGHT else TouchSide.LEFT
+        calibrationPrefs.edit().putString("source_side", sourceSide.name).apply()
+        statusText = if (sourceSide == TouchSide.LEFT) {
+            "기준: 왼쪽 직접 터치 → 오른쪽 자동 터치"
+        } else {
+            "기준: 오른쪽 직접 터치 → 왼쪽 자동 터치"
+        }
+    }
+
+    private fun prepareCalibration() {
+        setThumbRunning(false)
+        setCapture(false)
+    }
+
+    private fun setMenuVisible(visible: Boolean) {
+        menuPaused = visible
+        if (visible) {
+            downPoint = null
+            setCapture(false)
+        } else if (armed) {
+            refreshCapture()
+        }
     }
 
     var statusText: String = "서비스 대기"
@@ -100,6 +168,11 @@ class TouchMirrorService : AccessibilityService() {
     fun startExperiment(selectedMode: MirrorMode): Boolean {
         if (armed) return false
         mode = selectedMode
+        sourceSide = runCatching {
+            TouchSide.valueOf(calibrationPrefs.getString("source_side", TouchSide.LEFT.name) ?: TouchSide.LEFT.name)
+        }.getOrDefault(TouchSide.LEFT)
+        thumbRunning = false
+        menuPaused = false
         armed = true
         dispatching = false
         activeStarted = false
@@ -121,6 +194,8 @@ class TouchMirrorService : AccessibilityService() {
         activeStarted = false
         activeWindowPair = null
         dispatching = false
+        thumbRunning = false
+        menuPaused = false
         overlay?.hide()
         overlay = null
         downPoint = null
@@ -154,6 +229,14 @@ class TouchMirrorService : AccessibilityService() {
         }
 
         val point = TapPoint(event.rawX, event.rawY)
+        if (mode == MirrorMode.THUMB && event.actionMasked == MotionEvent.ACTION_DOWN &&
+            overlay?.isControlAt(point.x, point.y) == true
+        ) {
+            downPoint = null
+            setCapture(false)
+            overlay?.openMenuFromCapturedTouch()
+            return
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downPoint = point
@@ -195,6 +278,31 @@ class TouchMirrorService : AccessibilityService() {
             return
         }
         val safeInset = 24f
+        if (mode == MirrorMode.THUMB) {
+            if (!thumbRunning || menuPaused || overlay?.isCalibrating == true) return
+            val input = pair.source(sourceSide).bounds
+            val output = pair.target(sourceSide).bounds
+            if (output.contains(touch.x, touch.y, safeInset)) {
+                // The user still needs to be able to tap the opposite test app normally.
+                overlay?.hideForDispatch()
+                replayGesture(listOf(touch), false)
+                return
+            }
+            if (!input.contains(touch.x, touch.y, safeInset)) {
+                stop("터치 범위 이탈")
+                return
+            }
+            val automatic = CoordinateMapper.map(
+                input, output, touch.x, touch.y, safeInset, currentCalibration()
+            ) ?: run {
+                stop("영점 보정이 창 밖을 가리킵니다.")
+                return
+            }
+            tapRequests += 1
+            overlay?.hideForDispatch()
+            replayGesture(listOf(touch, automatic), true)
+            return
+        }
         val source = when {
             pair.left.bounds.contains(touch.x, touch.y, safeInset) -> pair.left
             pair.right.bounds.contains(touch.x, touch.y, safeInset) -> pair.right
@@ -220,14 +328,14 @@ class TouchMirrorService : AccessibilityService() {
             touch.x,
             touch.y,
             safeInset,
-            currentCalibration(),
+            currentCalibration(TouchSide.LEFT),
         ) ?: run {
             stop("좌표 변환이 안전 영역을 벗어났습니다.")
             return
         }
 
         when (mode) {
-            MirrorMode.THUMB -> replayGesture(listOf(touch, transformed), true)
+            MirrorMode.THUMB -> return
             MirrorMode.DUAL_STROKE -> replayGesture(listOf(touch, transformed), false)
             MirrorMode.SEQUENTIAL -> replayGesture(listOf(touch, transformed), true)
             MirrorMode.NODE_CLICK -> {
@@ -346,55 +454,44 @@ class TouchMirrorService : AccessibilityService() {
             activeWindowPair = pair
             activeStarted = true
             handler.removeCallbacks(readyTimeout)
-            handler.postDelayed(activeTimeout, ACTIVE_MS)
+            if (mode == MirrorMode.THUMB) {
+                handler.postDelayed(readyTimeout, READY_WAIT_MS)
+            } else {
+                handler.postDelayed(activeTimeout, ACTIVE_MS)
+            }
         }
+
         if (mode == MirrorMode.THUMB) {
-            setCapture(false)
             if (overlay == null) {
+                setCapture(false)
                 overlay = ThumbOverlayController(
                     context = this,
                     pairProvider = ::resolveTestWindows,
-                    onTap = ::handleThumbTap,
-                    onStop = { stop("썸 메뉴에서 사용자 종료") },
+                    sideProvider = { sourceSide },
+                    runningProvider = { thumbRunning },
+                    calibrationProvider = { currentCalibration() },
+                    onRunToggle = ::toggleThumbRunning,
+                    onSideToggle = ::toggleTouchSide,
+                    onCalibrationStart = ::prepareCalibration,
                     onCalibrationSaved = ::saveCalibration,
                     onCalibrationReset = ::resetCalibration,
+                    onMenuVisibilityChanged = ::setMenuVisible,
                 )
                 if (overlay?.show(pair) != true) {
-                    stop("플로팅 썸 표시 실패")
+                    stop("플로팅 Thumb 표시 실패")
                     return
                 }
             }
-            if (overlay?.isCalibrating != true) {
-                statusText = "썸 ACTIVE (20초). 드래그 후 탭, 길게 눌러 영점 조절."
+            setCapture(thumbRunning && !menuPaused && overlay?.isCalibrating != true)
+            statusText = when {
+                overlay?.isCalibrating == true -> "영점 조절 중: 빨강은 두 점 이동, 흰색은 단독 이동"
+                thumbRunning -> "실행 중: ${if (sourceSide == TouchSide.LEFT) "좌 → 우" else "우 → 좌"} · 볼륨 아래 중지"
+                else -> "Thumb를 눌러 실행·중지 / 좌·우 선택 / 영점 조절"
             }
         } else {
             setCapture(true)
             statusText = "ACTIVE (최대 20초): 원탭만. 긴급 중지는 볼륨 아래."
         }
-    }
-
-    private fun handleThumbTap(touch: TapPoint) {
-        if (!armed || !activeStarted || dispatching || mode != MirrorMode.THUMB ||
-            overlay?.isCalibrating == true
-        ) return
-        val pair = resolveTestWindows()
-        if (pair == null || pair != activeWindowPair ||
-            !pair.left.bounds.contains(touch.x, touch.y, 24f)
-        ) {
-            statusText = "왼쪽 테스트 앱 안쪽 버튼 위치로 썸을 이동하세요."
-            return
-        }
-
-        overlay?.hideForDispatch()
-        dispatching = true
-        handler.postDelayed({
-            if (!armed) return@postDelayed
-            if (resolveTestWindows() != activeWindowPair) {
-                stop("분할 화면 변경으로 입력 취소")
-            } else {
-                handleTap(touch)
-            }
-        }, 90L)
     }
 
     private fun resolveTestWindows(): com.hebi.dualtouch.core.WindowPair? {

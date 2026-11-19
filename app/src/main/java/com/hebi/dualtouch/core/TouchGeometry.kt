@@ -55,6 +55,46 @@ data class WindowSnapshot(val packageName: String, val bounds: ScreenRect)
 
 data class WindowPair(val left: WindowSnapshot, val right: WindowSnapshot)
 
+enum class TouchSide { LEFT, RIGHT }
+
+fun WindowPair.source(side: TouchSide): WindowSnapshot =
+    if (side == TouchSide.LEFT) left else right
+
+fun WindowPair.target(side: TouchSide): WindowSnapshot =
+    if (side == TouchSide.LEFT) right else left
+
+object ThumbReferenceMotion {
+    fun moveSourceTogether(
+        source: ScreenRect,
+        target: ScreenRect,
+        requestedSource: TapPoint,
+        calibration: CalibrationOffset,
+        safeInsetPx: Float,
+    ): Pair<TapPoint, TapPoint>? {
+        val automatic = CoordinateMapper.map(
+            source, target,
+            requestedSource.x, requestedSource.y,
+            safeInsetPx, calibration,
+        ) ?: return null
+        return requestedSource to automatic
+    }
+
+    fun moveAutomaticOnly(
+        source: ScreenRect,
+        target: ScreenRect,
+        fixedSource: TapPoint,
+        requestedAutomatic: TapPoint,
+        safeInsetPx: Float,
+    ): CalibrationOffset? {
+        if (!source.contains(fixedSource.x, fixedSource.y, safeInsetPx) ||
+            !target.contains(requestedAutomatic.x, requestedAutomatic.y, safeInsetPx)
+        ) return null
+        return CalibrationMath.fromReferencePoints(
+            source, target, fixedSource, requestedAutomatic
+        )
+    }
+}
+
 object TestPackages {
     const val LEFT = "com.hebi.dualtouch.probeleft"
     const val RIGHT = "com.hebi.dualtouch.proberight"
