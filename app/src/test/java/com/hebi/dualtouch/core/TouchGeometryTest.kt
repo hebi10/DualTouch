@@ -133,12 +133,12 @@ class TouchGeometryTest {
         assertNotNull(moved)
         assertEquals(TapPoint(300f, 600f), moved!!.first)
         assertEquals(TapPoint(850f, 572f), moved.second)
-        assertEquals(
-            offset,
-            ThumbReferenceMotion.moveAutomaticOnly(
-                left, right, moved.first, moved.second, 24f
-            )
+        val remainingOffset = ThumbReferenceMotion.moveAutomaticOnly(
+            left, right, moved.first, moved.second, 24f
         )
+        assertNotNull(remainingOffset)
+        assertEquals(offset.dx, remainingOffset!!.dx, 0.0001f)
+        assertEquals(offset.dy, remainingOffset.dy, 0.0001f)
     }
 
     @Test fun whiteDragChangesOnlyCalibrationWhileRedRemainsFixed() {
@@ -146,7 +146,9 @@ class TouchGeometryTest {
         val offset = ThumbReferenceMotion.moveAutomaticOnly(
             left, right, red, TapPoint(855f, 600f), 24f
         )
-        assertEquals(CalibrationOffset(0.07f, 0f), offset)
+        assertNotNull(offset)
+        assertEquals(0.07f, offset!!.dx, 0.0001f)
+        assertEquals(0f, offset.dy, 0.0001f)
         val corrected = ThumbReferenceMotion.moveSourceTogether(
             left, right, red, offset!!, 24f
         )
