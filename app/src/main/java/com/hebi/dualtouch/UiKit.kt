@@ -37,7 +37,7 @@ object UiKit {
     fun panePair(context: Context, gapDp: Int = 24, primaryWeight: Float = 0.46f): PanePair {
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
-            baselineAligned = false
+            setBaselineAligned(false)
         }
         val primary = column(context)
         val secondary = column(context)
