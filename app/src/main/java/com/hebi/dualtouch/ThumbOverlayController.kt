@@ -16,6 +16,8 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import com.hebi.dualtouch.core.CalibrationOffset
+import com.hebi.dualtouch.core.SafetyAssessment
+import com.hebi.dualtouch.core.WindowSafetyPolicy
 import com.hebi.dualtouch.core.CoordinateMapper
 import com.hebi.dualtouch.core.ScreenRect
 import com.hebi.dualtouch.core.TapPoint
@@ -38,7 +40,8 @@ internal class ThumbOverlayController(
     private val runningProvider: () -> Boolean,
     private val calibrationProvider: () -> CalibrationOffset,
     private val onRunToggle: () -> Unit,
-    private val onSideToggle: () -> Unit,
+    private val candidateProvider: () -> SafetyAssessment,
+    private val onConnectApps: (TouchSide) -> Boolean,
     private val onCalibrationStart: () -> Unit,
     private val onCalibrationSaved: (CalibrationOffset) -> Unit,
     private val onCalibrationReset: () -> Unit,
@@ -201,14 +204,8 @@ internal class ThumbOverlayController(
             onRunToggle()
             closeMenu()
         }
-        addButton(column, if (sideProvider() == TouchSide.LEFT) {
-            "좌 선택  →  우 자동"
-        } else {
-            "우 선택  →  좌 자동"
-        }) {
-            onSideToggle()
-            updateSourceSide()
-            closeMenu()
+        addButton(column, "좌/우 선택 · 앱 연결") {
+            openPairSelection()
         }
         addButton(column, "영점 조절") { beginCalibration() }
 
@@ -216,6 +213,73 @@ internal class ThumbOverlayController(
         thumb?.view?.getLocationOnScreen(position)
         val preferredX = position[0] + (thumb?.view?.width ?: dp(52)) + dp(8)
         if (!showMenu(column, 242, preferredX, position[1])) {
+            onMenuVisibilityChanged(false)
+        }
+    }
+
+    /**
+     * Display packages captured from the two currently visible app windows.
+     * The user must explicitly approve the current pair AND the input direction.
+     */
+    private fun openPairSelection() {
+        closeMenu()
+        onMenuVisibilityChanged(true)
+        val column = panel()
+        val snapshot = candidateProvider()
+        val pair = snapshot.pair
+        val title = TextView(context).apply {
+            text = "현재 분할 앱 연결"
+            textSize = 17f
+            setTextColor(Color.BLACK)
+            setPadding(dp(10), dp(8), dp(10), dp(8))
+        }
+        column.addView(title)
+        if (snapshot.allowed && pair != null) {
+            val detail = TextView(context).apply {
+                text = "왼쪽: ${pair.left.packageName}\n" +
+                    "오른쪽: ${pair.right.packageName}\n" +
+                    "선택한 두 창에서만 1회 입력을 복제합니다."
+                textSize = 13f
+                setTextColor(Color.DKGRAY)
+                setPadding(dp(10), dp(6), dp(10), dp(8))
+            }
+            column.addView(detail)
+            addButton(column, "왼쪽 직접 → 오른쪽 자동 연결") {
+                if (onConnectApps(TouchSide.LEFT)) {
+                    updateSourceSide()
+                    closeMenu()
+                } else {
+                    closeMenu()
+                    openPairSelection()
+                }
+            }
+            addButton(column, "오른쪽 직접 → 왼쪽 자동 연결") {
+                if (onConnectApps(TouchSide.RIGHT)) {
+                    updateSourceSide()
+                    closeMenu()
+                } else {
+                    closeMenu()
+                    openPairSelection()
+                }
+            }
+        } else {
+            column.addView(TextView(context).apply {
+                text = WindowSafetyPolicy.message(snapshot.issue) +
+                    "\n먼저 사용하려는 앱 두 개를 좌우 5:5로 실행하세요. " +
+                    "보안·결제·입력 화면은 연결하지 않습니다."
+                textSize = 13f
+                setTextColor(Color.DKGRAY)
+                setPadding(dp(10), dp(8), dp(10), dp(8))
+            })
+        }
+        addButton(column, "다시 검색") {
+            closeMenu()
+            openPairSelection()
+        }
+        addButton(column, "닫기") { closeMenu() }
+        val at = IntArray(2)
+        thumb?.view?.getLocationOnScreen(at)
+        if (!showMenu(column, 292, at[0] + dp(25), at[1])) {
             onMenuVisibilityChanged(false)
         }
     }

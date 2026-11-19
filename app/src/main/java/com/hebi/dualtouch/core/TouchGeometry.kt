@@ -51,7 +51,7 @@ object CalibrationMath {
 }
 
 
-data class WindowSnapshot(val packageName: String, val bounds: ScreenRect, val displayId: Int = 0)
+data class WindowSnapshot(val packageName: String, val bounds: ScreenRect, val displayId: Int = 0, val windowId: Int = -1)
 
 data class WindowPair(val left: WindowSnapshot, val right: WindowSnapshot)
 

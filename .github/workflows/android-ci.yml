@@ -40,13 +40,21 @@ jobs:
           fi
       - name: Lint, unit tests and debug builds
         run: gradle --no-daemon :app:lintDebug :app:testDebugUnitTest :app:assembleDebug :probe-left:assembleDebug :probe-right:assembleDebug
-      - name: Upload un-signed debug test APKs
+      - name: Upload standalone user installation APK
         uses: actions/upload-artifact@v4
         with:
-          name: dualtouch-dt002-debug-apks
+          name: dualtouch-standalone-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload optional developer probe APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-dev-probes
           path: |
-            app/build/outputs/apk/debug/*.apk
             probe-left/build/outputs/apk/debug/*.apk
             probe-right/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
           if-no-files-found: error
           retention-days: 7

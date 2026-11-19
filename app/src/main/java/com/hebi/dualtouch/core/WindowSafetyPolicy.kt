@@ -18,6 +18,8 @@ data class ObservedWindow(
     val bounds: ScreenRect,
     val displayId: Int = 0,
     val focused: Boolean = false,
+    val windowId: Int = -1,
+    val sensitiveInput: Boolean = false,
 )
 
 enum class SafetyIssue {
@@ -30,6 +32,10 @@ enum class SafetyIssue {
     ACCESSIBILITY_OVERLAY,
     COVERED_BY_SYSTEM,
     UNKNOWN_WINDOW,
+    UNAPPROVED_PAIR,
+    PAIR_CHANGED,
+    PROTECTED_APP,
+    SENSITIVE_INPUT,
 }
 
 data class SafetyAssessment(
@@ -115,6 +121,10 @@ object WindowSafetyPolicy {
         SafetyIssue.ACCESSIBILITY_OVERLAY -> "다른 접근성 오버레이가 있어 중지합니다."
         SafetyIssue.COVERED_BY_SYSTEM -> "시스템 팝업이 표시되어 입력을 중지합니다."
         SafetyIssue.UNKNOWN_WINDOW -> "알 수 없는 창이 감지되어 입력을 중지합니다."
+        SafetyIssue.UNAPPROVED_PAIR -> "먼저 좌우 실행 중인 앱 두 개를 직접 연결해 주세요."
+        SafetyIssue.PAIR_CHANGED -> "연결한 앱 창이 변경되어 다시 선택해야 합니다."
+        SafetyIssue.PROTECTED_APP -> "시스템·보안·금융 앱은 연결할 수 없습니다."
+        SafetyIssue.SENSITIVE_INPUT -> "입력 필드·비밀번호 등이 감지되어 복제를 중단합니다."
     }
 }
 

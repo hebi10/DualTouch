@@ -19,6 +19,8 @@ import android.view.MotionEvent
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import com.hebi.dualtouch.core.AppPairApproval
+import com.hebi.dualtouch.core.AppPairPolicy
 import com.hebi.dualtouch.core.CalibrationOffset
 import com.hebi.dualtouch.core.DispatchGeneration
 import com.hebi.dualtouch.core.ObservedWindow
@@ -81,6 +83,7 @@ class TouchMirrorService : AccessibilityService() {
     private var activeWindowPair: com.hebi.dualtouch.core.WindowPair? = null
     private var overlay: ThumbOverlayController? = null
     private var sourceSide = TouchSide.LEFT
+    private var approvedAppPair: AppPairApproval? = null
     private var thumbRunning = false
     private var menuPaused = false
     private val dispatchGeneration = DispatchGeneration()
@@ -156,16 +159,30 @@ class TouchMirrorService : AccessibilityService() {
         setThumbRunning(!thumbRunning)
     }
 
-    private fun toggleTouchSide() {
-        if (mode != MirrorMode.THUMB || !armed) return
-        setThumbRunning(false)
-        sourceSide = if (sourceSide == TouchSide.LEFT) TouchSide.RIGHT else TouchSide.LEFT
-        calibrationPrefs.edit().putString("source_side", sourceSide.name).apply()
-        statusText = if (sourceSide == TouchSide.LEFT) {
-            "기준: 왼쪽 직접 터치 → 오른쪽 자동 터치"
-        } else {
-            "기준: 오른쪽 직접 터치 → 왼쪽 자동 터치"
+    private fun candidateAppPair(): SafetyAssessment =
+        AppPairPolicy.select(observeWindows(), packageName)
+
+    private fun connectVisibleApps(side: TouchSide): Boolean {
+        if (!armed || mode != MirrorMode.THUMB) return false
+        val assessment = candidateAppPair()
+        val pair = assessment.pair
+        if (!assessment.allowed || pair == null) {
+            statusText = "연결 불가: " + WindowSafetyPolicy.message(assessment.issue)
+            return false
         }
+        dispatchGeneration.invalidate()
+        dispatching = false
+        thumbRunning = false
+        downPoint = null
+        setCapture(false)
+        handler.removeCallbacks(activeTimeout)
+        approvedAppPair = AppPairApproval.fromPair(pair)
+        activeWindowPair = pair
+        activeStarted = true
+        sourceSide = side
+        calibrationPrefs.edit().putString("source_side", side.name).apply()
+        statusText = "연결 완료: ${pair.left.packageName} / ${pair.right.packageName}. 메뉴에서 실행하세요."
+        return true
     }
 
     private fun prepareCalibration() {
@@ -230,6 +247,7 @@ class TouchMirrorService : AccessibilityService() {
         dispatching = false
         activeStarted = false
         activeWindowPair = null
+        approvedAppPair = null
         downPoint = null
         tapRequests = 0
         setCapture(false)
@@ -254,7 +272,8 @@ class TouchMirrorService : AccessibilityService() {
             runningProvider = { thumbRunning },
             calibrationProvider = { currentCalibration() },
             onRunToggle = ::toggleThumbRunning,
-            onSideToggle = ::toggleTouchSide,
+            candidateProvider = ::candidateAppPair,
+            onConnectApps = ::connectVisibleApps,
             onCalibrationStart = ::prepareCalibration,
             onCalibrationSaved = ::saveCalibration,
             onCalibrationReset = ::resetCalibration,
@@ -308,6 +327,7 @@ class TouchMirrorService : AccessibilityService() {
         dispatching = false
         activeStarted = false
         activeWindowPair = null
+        approvedAppPair = null
         overlay?.hide()
         overlay = null
         tapRequests = 0
@@ -325,6 +345,7 @@ class TouchMirrorService : AccessibilityService() {
         armed = false
         activeStarted = false
         activeWindowPair = null
+        approvedAppPair = null
         dispatching = false
         thumbRunning = false
         menuPaused = false
@@ -374,6 +395,10 @@ class TouchMirrorService : AccessibilityService() {
 
     override fun onMotionEvent(event: MotionEvent) {
         if (!armed || !capturing || dispatching) return
+        if (mode == MirrorMode.THUMB && approvedAppPair == null) {
+            stop("연결된 앱이 없어 입력을 차단했습니다.")
+            return
+        }
         if (event.pointerCount != 1) {
             stop("여러 손가락 입력은 지원하지 않습니다.")
             return
@@ -638,6 +663,12 @@ class TouchMirrorService : AccessibilityService() {
                     dispatching = false
                     handler.removeCallbacks(activeTimeout)
                 }
+                if (approvedAppPair != null &&
+                    assessment.issue != SafetyIssue.NONE &&
+                    assessment.issue != SafetyIssue.UNAPPROVED_PAIR
+                ) {
+                    approvedAppPair = null
+                }
                 activeStarted = false
                 activeWindowPair = null
                 downPoint = null
@@ -690,8 +721,8 @@ class TouchMirrorService : AccessibilityService() {
         statusText = "고급 실험 ACTIVE (최대 20초) · 볼륨 아래 긴급 중지"
     }
 
-    private fun inspectTestWindows(): SafetyAssessment {
-        val observed = windows.map { window ->
+    private fun observeWindows(): List<ObservedWindow> {
+        return windows.map { window ->
             val bounds = Rect()
             window.getBoundsInScreen(bounds)
             val layer = when (window.type) {
@@ -703,15 +734,45 @@ class TouchMirrorService : AccessibilityService() {
                 AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER -> WindowLayer.SPLIT_DIVIDER
                 else -> WindowLayer.OTHER
             }
+            val root = window.root
             ObservedWindow(
                 layer = layer,
-                packageName = window.root?.packageName?.toString(),
+                packageName = root?.packageName?.toString(),
                 bounds = ScreenRect(bounds.left, bounds.top, bounds.right, bounds.bottom),
                 displayId = window.displayId,
                 focused = window.isFocused,
+                windowId = window.id,
+                sensitiveInput = if (layer == WindowLayer.APPLICATION) {
+                    containsSensitiveInput(root)
+                } else false,
             )
         }
-        return WindowSafetyPolicy.inspect(observed, packageName)
+    }
+
+    private fun containsSensitiveInput(root: AccessibilityNodeInfo?): Boolean {
+        if (root == null) return false
+        val stack = ArrayDeque<AccessibilityNodeInfo>()
+        stack.add(root)
+        var visited = 0
+        while (stack.isNotEmpty()) {
+            val node = stack.removeLast()
+            visited++
+            if (node.isPassword || (node.isEditable && node.isFocused)) return true
+            if (visited >= 256) return true
+            for (i in 0 until node.childCount) {
+                node.getChild(i)?.let { stack.add(it) }
+            }
+        }
+        return false
+    }
+
+    private fun inspectTestWindows(): SafetyAssessment {
+        val visible = observeWindows()
+        return if (mode == MirrorMode.THUMB) {
+            AppPairPolicy.verify(visible, packageName, approvedAppPair)
+        } else {
+            WindowSafetyPolicy.inspect(visible, packageName)
+        }
     }
 
     private fun resolveTestWindows(): com.hebi.dualtouch.core.WindowPair? =

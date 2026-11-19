@@ -168,15 +168,15 @@ class MainActivity : Activity() {
         }
 
     private fun intro() {
-        header("DualTouch", "좌우 분할 화면 터치 동기화 실험", false)
+        header("DualTouch", "사용자가 연결한 두 분할 앱의 터치 동기화", false)
         section("한 번의 터치, 두 화면의 반응", 26)
         card("이 앱의 사용 범위",
-            "현재 버전은 Galaxy Fold의 좌우 분할 화면과 DualTouch 전용 테스트 앱 두 개에서만 터치 복제를 실험합니다.")
+            "현재 열려 있는 두 분할 앱을 사용자가 직접 연결하면 한쪽의 탭을 다른 쪽에도 재생합니다. 동일 앱은 Android가 별도 창 2개를 지원할 때만 연결됩니다.")
         card("접근성 서비스 사용",
             "화면 위에 작은 조절점(Thumb)을 띄우고, 사용자가 실행을 선택하면 Android 입력 이벤트를 수신해 상대 창으로 가상 터치를 재생합니다.")
         card("개인정보와 주의사항",
             "화면 내용·비밀번호·터치 기록을 서버에 전송하거나 저장하지 않습니다. " +
-                "입력 수신 중 원래 터치가 차단될 수 있어, 실사용 앱·금융·결제 화면에서는 사용하지 않습니다.")
+                "입력 수신 중 원래 터치가 차단되거나 재현에 실패할 수 있습니다. 금융·결제·비밀번호·민감한 화면은 차단하거나 지원하지 않습니다.")
         addAction("내용을 이해하고 계속", top = 26) {
             settings.onboardingRead = true
             go(Page.HOME)
@@ -185,7 +185,7 @@ class MainActivity : Activity() {
     }
 
     private fun home() {
-        header("DualTouch", "좌우 분할 화면 터치 제어 · 기술 검증", false)
+        header("DualTouch", "실제 분할 앱 연결 · 터치 동기화", false)
 
         val pageRoot = root
         val primary: LinearLayout
@@ -211,13 +211,13 @@ class MainActivity : Activity() {
             if (service == null) {
                 "권한을 설정하면 플로팅 Thumb를 표시할 수 있습니다."
             } else {
-                "Thumb 메뉴에서 실행·중지, 방향 선택과 영점을 조절합니다."
+                "Thumb 메뉴에서 두 앱의 연결·방향·영점을 조절합니다."
             }, 13f, secondary = true), topDp = 8)
         UiKit.add(root, stateCard, topDp = 10)
 
         section("플로팅 컨트롤")
-        addBody("플로팅 표시를 누르면 화면에 작은 원형 Thumb가 나타납니다. " +
-            "Thumb를 누르면 세 가지 제어 메뉴가 열립니다.", secondary = true)
+        addBody("플로팅 표시를 누르면 원형 Thumb가 나타납니다. " +
+            "두 앱을 분할로 연 뒤 Thumb의 좌/우 선택에서 앱 두 개를 직접 연결하세요.", secondary = true)
         floatingButton = addAction(floatingButtonLabel(), top = 14) {
             val currentService = TouchMirrorService.current
             when {
@@ -243,19 +243,19 @@ class MainActivity : Activity() {
 
         root = secondary
         section("사용 준비", if (viewport.useTwoPanes) 0 else 22)
-        card("01 · 두 앱 분할",
-            "Fold를 펼친 뒤 Test Left와 Test Right를 좌우에 각각 배치합니다.")
-        card("02 · 직접 터치 방향",
-            "Thumb 메뉴에서 좌 → 우 또는 우 → 좌를 선택합니다.")
-        card("03 · 시작과 긴급 중지",
-            "Thumb에서 실행을 선택한 후 테스트합니다. 볼륨 아래 버튼으로 긴급 중지할 수 있습니다.")
+        card("01 · 실제 앱 두 개 분할",
+            "Android 분할 화면에서 원하는 앱 두 개를 좌우에 배치합니다. 동일 앱은 멀티 인스턴스를 지원해야 합니다.")
+        card("02 · 좌/우 앱 연결",
+            "Thumb → 좌/우 선택 · 앱 연결 → 표시된 앱을 확인하고 직접 누를 방향을 승인합니다.")
+        card("03 · 실행·영점",
+            "연결 후 Thumb의 실행을 누릅니다. 필요하면 영점을 조절하고 볼륨 아래로 긴급 중지합니다.")
         addAction("분할 화면 안내", false) { go(Page.GUIDE) }
         addAction("접근성 권한 안내", false) { go(Page.PERMISSION) }
 
         section("기술 검증")
         card("Android 입력 처리 제한",
-            "원본 터치가 그대로 전달되지 않을 수 있어 실기기에서 정확성과 복구 동작을 확인해야 합니다.")
-        addAction("추가 입력 방식 비교", false) { go(Page.ADVANCED) }
+            "실제 앱의 원본 터치가 취소될 수 있습니다. 명시적으로 연결한 앱 두 개만 제어하며 " +
+                "키보드·보안/금융·결제 화면에서는 자동 입력을 중지합니다.")
         addAction("오류·중지 안내", false) { go(Page.HELP) }
         root = pageRoot
     }
@@ -263,17 +263,17 @@ class MainActivity : Activity() {
     private fun permission() {
         header("접근성 권한", "사용자가 직접 Android 시스템 설정에서 허용합니다.")
         card("권한이 필요한 이유",
-            "플로팅 Thumb와 두 창의 터치 복제 실험을 위해 접근성 서비스를 사용합니다. " +
-                "화면 위에 메뉴를 표시하고, 실행 중에만 입력을 처리합니다.")
+            "사용자가 선택한 두 앱의 창 위치와 터치 입력을 확인하기 위해 접근성 서비스를 사용합니다. " +
+                "화면 위에 Thumb 메뉴를 표시하고, 사용자가 실행을 선택한 동안에만 입력합니다.")
         card("데이터 처리",
             "화면 문자·스크린샷·계정 정보·터치 좌표 스트림을 서버에 보내지 않습니다. " +
                 "영점 보정값과 화면 표시 설정만 기기에 저장합니다.")
         card("사용 범위",
-            "현재 기술 검증은 Test Left 및 Test Right 두 앱으로 제한됩니다. " +
-                "Android가 실제 원본 터치를 취소할 수 있습니다.")
+            "실제 분할 화면의 두 앱은 현재 세션에서 사용자가 직접 승인해야 합니다. " +
+                "금융·비밀번호·결제·텍스트 입력 화면은 차단하며 원래 터치가 취소될 수 있습니다.")
         card("사용자 동의 안내",
-            "터치 이벤트는 Android의 입력 흐름에 영향을 주며, 원래 앱으로 전달되지 않을 수 있습니다. " +
-                "테스트 앱에서만 기능을 사용하고 볼륨 아래 키로 즉시 중단할 수 있습니다.",
+            "접근성 서비스는 사용자가 선택한 두 앱의 패키지명·창 위치·터치 이벤트를 확인합니다. " +
+                "원래 터치가 취소될 수 있으니 민감한 화면에서는 사용하지 않고 볼륨 아래 키로 중지하세요.",
             top = 16)
         val accepted = CheckBox(this).apply {
             text = "접근성 서비스가 터치를 수신하고 가상 터치를 실행하는 목적·위험을 이해했으며 동의합니다."
@@ -295,17 +295,17 @@ class MainActivity : Activity() {
     }
 
     private fun guide() {
-        header("분할 화면 준비", "좌우 독립 창에 테스트 앱을 배치합니다.")
-        card("1 · 세 앱 설치",
-            "DualTouch POC, DualTouch Test Left, DualTouch Test Right APK를 설치합니다.")
-        card("2 · 폴드 펼침",
-            "Fold 화면을 펼친 후 Test Left와 Test Right를 5:5로 분할합니다.")
-        card("3 · 플로팅 표시",
-            "DualTouch 홈에서 플로팅 표시를 누르면 Thumb가 나타납니다. " +
-                "Thumb를 터치하여 실행·중지와 터치 방향을 고릅니다.")
-        card("4 · 영점 조절",
-            "빨강은 직접 터치, 흰색은 자동 터치 위치입니다. " +
-                "빨강을 움직이면 두 점이 같이 이동하고, 흰색을 움직이면 흰색만 이동합니다.")
+        header("실제 분할 앱 연결", "DualTouch 본 앱 하나로 열려 있는 앱 두 개를 제어합니다.")
+        card("1 · 플로팅 표시",
+            "접근성 서비스 목적에 동의하고 Android 설정에서 활성화한 뒤 DualTouch 홈에서 플로팅 표시를 선택합니다.")
+        card("2 · 실제 앱 두 개 분할",
+            "Android의 좌우 분할 화면에서 원하는 앱을 엽니다. 같은 앱을 두 번 실행하려면 해당 앱·OS가 독립 실행을 지원해야 합니다.")
+        card("3 · 앱 연결과 방향 선택",
+            "Thumb를 누른 다음 '좌/우 선택 · 앱 연결'에서 좌우 앱 패키지를 확인하고 직접 터치할 방향을 선택합니다.")
+        card("4 · 실행·영점 조절",
+            "Thumb의 실행을 누르고 필요한 경우 빨간 직접 터치 점과 흰 자동 터치 점의 상대 위치를 조절합니다.")
+        card("5 · 긴급 중지",
+            "Thumb의 중지 또는 기기 볼륨 아래 버튼으로 종료합니다. 화면 구성이 바뀌면 앱 연결을 다시 승인해야 합니다.")
         addAction("홈에서 플로팅 표시", top = 20) { go(Page.HOME) }
     }
 
@@ -365,11 +365,11 @@ class MainActivity : Activity() {
         card("플로팅이 보이지 않을 때",
             "접근성 서비스가 활성인지 확인하고, 홈에서 '플로팅 표시'를 선택하세요.")
         card("두 창을 인식하지 못할 때",
-            "좌우 분할의 Test Left / Test Right가 모두 열려 있는지 확인하세요. " +
-                "임의의 타사 앱에는 터치를 전달하지 않습니다.")
+            "실제 앱 두 개를 분할로 열고 Thumb의 앱 연결 메뉴에서 두 창과 방향을 승인하세요. " +
+                "키보드·시스템·보안 UI나 창 변경이 감지되면 입력이 중단됩니다.")
         card("긴급 중지",
-            "실험 중 볼륨 아래 키로 중지할 수 있습니다. " +
-                "입력 재현이 실패하면 시스템 접근성 설정에서 DualTouch 서비스를 비활성화할 수 있습니다.")
+            "실행 중 볼륨 아래 키로 중지할 수 있습니다. 원래 터치가 작동하지 않거나 " +
+                "두 앱 외에 입력이 발생하면 Android 접근성 설정에서 서비스를 비활성화하세요.")
         val status = TouchMirrorService.current?.statusText ?: "접근성 서비스 OFF"
         card("마지막 서비스 상태", status)
         addAction("플로팅 숨기기", false) {
