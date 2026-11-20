@@ -23,8 +23,21 @@ def shell(*args):
 
 
 def nodes():
-    shell("uiautomator", "dump", "/sdcard/dualtouch-window.xml")
-    return ET.fromstring(adb("exec-out", "cat", "/sdcard/dualtouch-window.xml"))
+    for _ in range(6):
+        shell("rm", "-f", "/sdcard/dualtouch-window.xml")
+        shell("uiautomator", "dump", "--compressed", "/sdcard/dualtouch-window.xml")
+        raw = adb("exec-out", "cat", "/sdcard/dualtouch-window.xml")
+        try:
+            tree = ET.fromstring(raw)
+            if any(n.get("package") == PACKAGE for n in tree.iter("node")):
+                return tree
+        except ET.ParseError:
+            pass
+        time.sleep(2)
+    (OUTPUT / "diagnostic-screen.png").write_bytes(adb("exec-out", "screencap", "-p"))
+    (OUTPUT / "diagnostic-activity.txt").write_text(shell("dumpsys", "activity", "activities"))
+    (OUTPUT / "diagnostic-crash.txt").write_text(shell("logcat", "-d", "-b", "crash"))
+    raise AssertionError("App accessibility root was unavailable after bounded retries")
 
 
 def tap(text):
@@ -47,7 +60,9 @@ def tap(text):
 
 def launch():
     shell("am", "force-stop", PACKAGE)
-    shell("am", "start", "-W", "-n", PACKAGE + "/.MainActivity")
+    started = shell("am", "start", "-W", "-n", PACKAGE + "/.MainActivity")
+    print(started, flush=True)
+    assert "Error:" not in started, "Activity launch failed"
     time.sleep(2)
 
 
@@ -64,7 +79,6 @@ def capture(name):
 
 
 try:
-    shell("settings", "put", "system", "system_locales", "ko-KR")
     shell("cmd", "uimode", "night", "no")
     launch()
     capture("phone-01-intro-light")
