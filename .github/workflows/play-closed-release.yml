@@ -29,7 +29,6 @@ env:
   EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
   RELEASE_APPROVED: ${{ inputs.approved }}
   GH_TOKEN: ${{ github.token }}
-  BUNDLETOOL_JAR: ${{ runner.temp }}/bundletool.jar
   RELEASE_STAGE: closed
   SOURCE_RUN_ID: ${{ inputs.internal_run_id }}
   AAB_SHA256: ${{ inputs.aab_sha256 }}
