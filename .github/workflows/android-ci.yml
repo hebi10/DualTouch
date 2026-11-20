@@ -1,0 +1,109 @@
+name: Android PoC CI
+
+on:
+  pull_request:
+    paths-ignore: ['docs/**', 'store/**', '**/*.md']
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Kotlin unit tests and debug APKs
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Install Android platform 36 using preinstalled SDK
+        shell: bash
+        run: |
+          SDK_MANAGER="${ANDROID_HOME:-$ANDROID_SDK_ROOT}/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDK_MANAGER" --licenses >/dev/null || true
+          "$SDK_MANAGER" --install "platforms;android-36" "build-tools;35.0.0"
+      - name: Gradle 8.11.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - name: Release pipeline regression tests
+        run: python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
+      - name: Restricted permission audit
+        run: |
+          if grep -nE 'android.permission.(INTERNET|SYSTEM_ALERT_WINDOW|QUERY_ALL_PACKAGES|BIND_DEVICE_ADMIN)' app/src/main/AndroidManifest.xml; then
+            echo 'Restricted permission unexpectedly requested'
+            exit 1
+          fi
+      - name: Lint, unit tests and debug builds
+        run: gradle --no-daemon :app:lintDebug :app:lintRelease :app:testDebugUnitTest :app:assembleRelease :app:assembleDebug :probe-left:assembleDebug :probe-right:assembleDebug
+      - name: Upload standalone user installation APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-standalone-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload optional developer probe APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-dev-probes
+          path: |
+            probe-left/build/outputs/apk/debug/*.apk
+            probe-right/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload QA reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-android-qa
+          path: |
+            app/build/reports/lint-results-*.html
+            app/build/test-results/testDebugUnitTest/*.xml
+          retention-days: 7
+
+  store-ui:
+    name: Actual emulator UI screenshots (not device touch QA)
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dualtouch-standalone-debug
+          path: qa/apk
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Capture real Android 15 UI
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          script: |
+            adb install -r qa/apk/app-debug.apk
+            python3 scripts/capture_store_screens.py
+      - name: Save actual screenshots and source metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-actual-emulator-screenshots
+          path: qa/store-screenshots
+          if-no-files-found: warn
+          retention-days: 7
+
