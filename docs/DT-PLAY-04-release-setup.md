@@ -2,7 +2,7 @@
 
 2026-11-20 사용자 승인 범위: IARC 약관, 폭넓은 타겟 연령, 기존 업로드 키를 이용한 AAB 생성과 내부·비공개 테스트 배포. 정식 출시 승인 없음.
 
-GalliPick의 세 단계 분리를 참고하여 수동 워크플로를 구성했다. 다른 앱의 키·서비스 계정 값을 복사하거나 새 키를 생성하지 않는다.
+GalliPick의 세 단계 분리를 참고하여 수동 워크플로를 구성했다. DualTouch의 첫 업로드에는 이 앱 전용 키를 사용한다.
 
 | 단계 | 수동 워크플로 | 동작 |
 |---|---|---|
@@ -12,7 +12,21 @@ GalliPick의 세 단계 분리를 참고하여 수동 워크플로를 구성했�
 
 공통 게이트는 정확한 main SHA, 최신 main CI 성공, 명시적 단계 승인, 런타임 소스에 맞는 실제 기기 터치·안전 QA, 접근성 시연·심사 자료다. `release/readiness.json`은 현재 미검증 항목을 false/빈 값으로 유지한다. 설정 파일을 통과 목적으로 허위 변경하지 않는다. PR #1은 실기기 검증 전 Draft 상태를 유지한다.
 
-## 기존 키 연결
+## 첫 업로드 키 생성 및 연결
+
+DualTouch의 업로드 키는 아직 발급되지 않았다. GitHub Actions의 Secret과 Variable 목록도 비어 있는 것을 확인했다. 키 파일은 소유자가 관리하는 PC에서 만든다.
+
+Python 3와 JDK(Android Studio의 JDK도 가능), DualTouch의 Actions Secrets 수정에 접근할 수 있는 GitHub CLI 로그인 환경에서 실행한다.
+
+```powershell
+py -3 .\scripts\release\setup_upload_key.py --register
+```
+
+스크립트는 숨겨진 입력으로 받은 암호를 사용해 Windows의 `%LOCALAPPDATA%\DualTouch\signing`에 암호화된 PKCS12를 보관한다. 같은 파일이 있으면 재사용하고, 같은 이름의 GitHub Secret이 있으면 중단한다. GitHub CLI가 비밀값을 표준 입력으로 받아 암호화한다. 키스토어와 암호는 각각 안전한 곳에 백업한다.
+
+화면에 나온 **공개 인증서 SHA-256**을 `release/readiness.json`의 `upload_certificate_sha256`에 반영한다. 최초 서명 AAB를 Play에 올릴 때 이 인증서를 업로드 키로 사용한다.
+
+## 서명 Secret 및 Play API 설정
 
 - Secret: `DUALTOUCH_SIGNING_BUNDLE_BASE64`. 기존 키스토어를 담은 ZIP의 Base64이며 소스·Drive·로그에 값을 기록하지 않는다.
 - ZIP: `dualtouch-signing.p12` 또는 `dualtouch-signing.jks` 1개, `signing.properties`, 공개 `certificate.sha256`, `RESTORE.txt`.
