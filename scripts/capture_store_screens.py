@@ -79,6 +79,8 @@ def capture(name):
 
 
 try:
+    shell("wm", "size", "1080x1920")
+    shell("wm", "density", "420")
     shell("cmd", "uimode", "night", "no")
     launch()
     capture("phone-01-intro-light")
@@ -99,18 +101,21 @@ try:
     tap("표시 설정")
     capture("phone-07-settings-dark")
     shell("cmd", "uimode", "night", "no")
-    shell("wm", "size", "2560x1600")
-    shell("wm", "density", "320")
-    launch()
-    capture("large-viewport-01-home-light")
-    tap("표시 설정")
-    capture("large-viewport-02-settings-light")
+    for label, size, density in [("tablet-7", "1600x900", "240"),
+                                  ("tablet-10", "2560x1440", "320")]:
+        shell("wm", "size", size)
+        shell("wm", "density", density)
+        launch()
+        capture(label + "-01-home-light")
+        tap("표시 설정")
+        capture(label + "-02-settings-light")
 finally:
     (OUTPUT / "capture-metadata.json").write_text(json.dumps({
         "source_commit": os.environ.get("SOURCE_SHA", "unknown"),
         "workflow_commit": os.environ.get("GITHUB_SHA", "unknown"),
         "android_api": shell("getprop", "ro.build.version.sdk").strip(),
-        "environment": "Android emulator; one phone profile, plus resized large viewport",
+        "environment": "Android emulator; 9:16 phone plus resized 16:9 tablet viewports",
+        "physical_tablet_verified": False,
         "touch_mirroring_verified": False,
         "physical_foldable_verified": False,
         "captures": records,
