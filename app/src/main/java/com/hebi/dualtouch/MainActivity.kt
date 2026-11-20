@@ -10,6 +10,7 @@ import android.net.Uri
 import android.content.ActivityNotFoundException
 import android.provider.Settings
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.CheckBox
@@ -296,15 +297,47 @@ class MainActivity : Activity() {
             minHeight = UiKit.dp(this@MainActivity, 52)
         }
         UiKit.add(root, accepted, topDp = 20)
-        val configure = addAction("동의하고 Android 접근성 설정 열기", top = 12) {
-            settings.accessibilityDisclosureAccepted = true
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        val consentHint = UiKit.text(this, palette, "", 13f, secondary = true).apply {
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
-        configure.isEnabled = accepted.isChecked
-        accepted.setOnCheckedChangeListener { _, checked ->
-            configure.isEnabled = checked
+        UiKit.add(root, consentHint, topDp = 8)
+        fun updateConsentHint(checked: Boolean) {
+            consentHint.text = if (checked) {
+                "시스템 접근성 설정의 설치된 앱에서 DualTouch를 직접 켜세요."
+            } else {
+                "시스템 설정을 열려면 먼저 위 동의 항목을 체크해 주세요."
+            }
+        }
+        updateConsentHint(accepted.isChecked)
+        accepted.setOnCheckedChangeListener { _, checked -> updateConsentHint(checked) }
+        addAction("동의하고 Android 접근성 설정 열기", top = 12) {
+            if (!accepted.isChecked) {
+                consentHint.text = "위 동의 항목을 체크한 뒤 다시 눌러 주세요."
+                return@addAction
+            }
+            settings.accessibilityDisclosureAccepted = true
+            openAccessibilitySettings()
         }
         addAction("권한 없이 돌아가기", false) { go(Page.HOME) }
+    }
+
+    private fun openAccessibilitySettings() {
+        if (launchSystemSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS)) return
+        val opened = launchSystemSettings(Settings.ACTION_SETTINGS)
+        val path = "설정 → 접근성 → 설치된 앱 → DualTouch"
+        val message = if (opened) "$path 순서로 이동하세요." else "설정을 열 수 없습니다. $path에서 직접 설정하세요."
+        Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+    }
+
+    private fun launchSystemSettings(action: String): Boolean {
+        return try {
+            startActivity(Intent(action))
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        } catch (_: SecurityException) {
+            false
+        }
     }
 
     private fun guide() {
@@ -390,9 +423,7 @@ class MainActivity : Activity() {
             TouchMirrorService.current?.hideFloatingControl()
             go(Page.HOME)
         }
-        addAction("Android 접근성 설정 열기", false) {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
-        }
+        addAction("Android 접근성 설정 열기", false) { openAccessibilitySettings() }
     }
 
     @Suppress("DEPRECATION")

@@ -66,6 +66,25 @@ def launch():
     time.sleep(2)
 
 
+def verify_accessibility_settings():
+    action = "동의하고 Android 접근성 설정 열기"
+    tap(action)
+    assert any(
+        node.get("text") == "위 동의 항목을 체크한 뒤 다시 눌러 주세요."
+        for node in nodes().iter("node")
+    ), "Settings action did not explain the missing consent"
+    tap("접근성 서비스가 터치를 수신하고 가상 터치를 실행하는 목적·위험을 이해했으며 동의합니다.")
+    tap(action)
+    for _ in range(10):
+        activities = shell("dumpsys", "activity", "activities")
+        if re.search(r"(?:topResumedActivity|mResumedActivity).*com\.android\.settings/.*Accessibility", activities):
+            shell("input", "keyevent", "KEYCODE_BACK")
+            print("Verified: accessibility settings opened only after explicit consent", flush=True)
+            return
+        time.sleep(1)
+    raise AssertionError("The Android accessibility settings screen did not open after consent")
+
+
 def capture(name):
     tree = nodes()
     assert any(n.get("package") == PACKAGE for n in tree.iter("node")), "App UI missing"
@@ -91,6 +110,7 @@ try:
     launch()
     tap("플로팅 표시")
     capture("phone-04-disclosure-light")
+    verify_accessibility_settings()
     tap("권한 없이 돌아가기")
     launch()
     tap("분할 화면 안내")
