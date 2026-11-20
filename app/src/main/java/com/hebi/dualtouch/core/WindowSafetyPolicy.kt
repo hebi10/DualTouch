@@ -27,6 +27,7 @@ enum class SafetyIssue {
     MISSING_PAIR,
     OTHER_APPLICATION,
     DIFFERENT_DISPLAY,
+    UNSUPPORTED_DISPLAY,
     NO_FOCUSED_TARGET,
     KEYBOARD,
     ACCESSIBILITY_OVERLAY,
@@ -70,6 +71,9 @@ object WindowSafetyPolicy {
         }
         val displays = applications.map { it.displayId }.toSet()
         if (displays.size != 1) return SafetyAssessment(null, SafetyIssue.DIFFERENT_DISPLAY)
+        if (displays.single() != 0) {
+            return SafetyAssessment(null, SafetyIssue.UNSUPPORTED_DISPLAY)
+        }
 
         val pair = WindowPairResolver.resolve(candidates)
             ?: return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
@@ -116,6 +120,7 @@ object WindowSafetyPolicy {
         SafetyIssue.MISSING_PAIR -> "좌우 5:5 테스트 창을 확인할 수 없습니다."
         SafetyIssue.OTHER_APPLICATION -> "Test Left와 Test Right 두 창만 열어주세요."
         SafetyIssue.DIFFERENT_DISPLAY -> "두 앱이 같은 디스플레이에 있어야 합니다."
+        SafetyIssue.UNSUPPORTED_DISPLAY -> "기본 디스플레이의 좌우 분할 화면만 지원합니다."
         SafetyIssue.NO_FOCUSED_TARGET -> "대상 창에 포커스가 없어 입력을 중지합니다."
         SafetyIssue.KEYBOARD -> "키보드 입력 중에는 터치 복제를 중지합니다."
         SafetyIssue.ACCESSIBILITY_OVERLAY -> "다른 접근성 오버레이가 있어 중지합니다."
@@ -140,3 +145,4 @@ class DispatchGeneration {
 
     fun valid(token: Long): Boolean = token == number
 }
+

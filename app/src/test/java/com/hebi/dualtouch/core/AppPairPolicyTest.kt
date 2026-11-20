@@ -62,6 +62,21 @@ class AppPairPolicyTest {
         assertTrue(AppPairPolicy.isProtectedPackage(owner, owner))
     }
 
+    @Test fun revokesApprovalWhenBoundsChangeWithoutChangingWindowId() {
+        val candidates = pair()
+        val approval = AppPairApproval.fromPair(AppPairPolicy.select(candidates, owner).pair!!)
+        val moved = candidates.map {
+            it.copy(bounds = it.bounds.copy(top = 60, bottom = 1080))
+        }
+        assertEquals(SafetyIssue.PAIR_CHANGED,
+            AppPairPolicy.verify(moved, owner, approval).issue)
+    }
+
+    @Test fun rejectsTwoWindowsOnTheSameSecondaryDisplay() {
+        assertEquals(SafetyIssue.UNSUPPORTED_DISPLAY,
+            AppPairPolicy.select(pair().map { it.copy(displayId = 2) }, owner).issue)
+    }
+
     @Test fun rejectsPasswordOrEditableUi() {
         val sensitive = pair().map {
             if (it.windowId == 29) it.copy(sensitiveInput = true) else it
@@ -113,3 +128,4 @@ class AppPairPolicyTest {
             ), owner).issue)
     }
 }
+

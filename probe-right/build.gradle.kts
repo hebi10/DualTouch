@@ -5,12 +5,12 @@ plugins {
 
 android {
     namespace = "com.hebi.dualtouch.proberight"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.hebi.dualtouch.proberight"
         minSdk = 34
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 1
         versionName = "0.0.1-poc"
     }
@@ -28,3 +28,4 @@ android {
 dependencies {
     implementation(project(":probe-common"))
 }
+

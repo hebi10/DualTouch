@@ -93,12 +93,17 @@ class AppearanceSettings(context: Context) {
     }
 
     var accessibilityDisclosureAccepted: Boolean
-        get() = preferences.getBoolean("accessibility_disclosure_accepted", false)
+        get() = preferences.getBoolean("accessibility_disclosure_accepted", false) &&
+            preferences.getInt("accessibility_disclosure_version", 0) == 2
         set(value) {
-            preferences.edit().putBoolean("accessibility_disclosure_accepted", value).apply()
+            preferences.edit()
+                .putBoolean("accessibility_disclosure_accepted", value)
+                .putInt("accessibility_disclosure_version", if (value) 2 else 0)
+                .apply()
         }
 
     var onboardingRead: Boolean
         get() = preferences.getBoolean("onboarding_read", false)
         set(value) { preferences.edit().putBoolean("onboarding_read", value).apply() }
 }
+

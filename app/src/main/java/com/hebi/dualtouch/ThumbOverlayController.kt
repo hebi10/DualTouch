@@ -408,10 +408,10 @@ internal class ThumbOverlayController(
         val view = circle(label, background, foreground, size, border)
         view.alpha = a.markerOpacityPercent / 100f
         view.textSize = 12f
-        view.contentDescription = if (background == Color.WHITE) {
-            "자동 터치 흰색 보정점. 드래그하면 흰색만 움직입니다"
+        view.contentDescription = if (label == "자동") {
+            "자동 터치 보정점. 드래그하면 이 점만 움직입니다"
         } else {
-            "직접 터치 빨간색 보정점. 드래그하면 두 점이 함께 움직입니다"
+            "직접 터치 보정점. 드래그하면 두 점이 함께 움직입니다"
         }
         val layout = params(size, size,
             (point.x - size / 2).toInt(),
@@ -485,6 +485,7 @@ internal class ThumbOverlayController(
         var initialY = 0
         var moved = false
 
+        view.setOnClickListener { onTap() }
         view.setOnTouchListener { _, event ->
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
@@ -507,7 +508,7 @@ internal class ThumbOverlayController(
                     true
                 }
                 MotionEvent.ACTION_UP -> {
-                    if (!moved) onTap()
+                    if (!moved) view.performClick()
                     true
                 }
                 MotionEvent.ACTION_CANCEL -> true
@@ -634,3 +635,4 @@ internal class ThumbOverlayController(
     private fun dp(value: Int): Int =
         (value * context.resources.displayMetrics.density).toInt()
 }
+

@@ -9,3 +9,7 @@ local.properties
 *.jks
 *.aab
 *.apk
+/qa/
+__pycache__/
+*.pyc
+

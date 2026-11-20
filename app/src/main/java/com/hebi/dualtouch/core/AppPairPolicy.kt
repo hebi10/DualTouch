@@ -13,6 +13,8 @@ data class AppPairApproval(
     val leftWindowId: Int,
     val rightWindowId: Int,
     val displayId: Int,
+    val leftBounds: ScreenRect,
+    val rightBounds: ScreenRect,
 ) {
     companion object {
         fun fromPair(pair: WindowPair): AppPairApproval = AppPairApproval(
@@ -21,6 +23,8 @@ data class AppPairApproval(
             pair.left.windowId,
             pair.right.windowId,
             pair.left.displayId,
+            pair.left.bounds,
+            pair.right.bounds,
         )
     }
 
@@ -30,7 +34,8 @@ data class AppPairApproval(
             pair.left.windowId == leftWindowId &&
             pair.right.windowId == rightWindowId &&
             pair.left.displayId == displayId &&
-            pair.right.displayId == displayId
+            pair.right.displayId == displayId &&
+            pair.left.bounds == leftBounds && pair.right.bounds == rightBounds
 }
 
 object AppPairPolicy {
@@ -81,6 +86,9 @@ object AppPairPolicy {
         }
         if (apps[0].displayId != apps[1].displayId) {
             return SafetyAssessment(null, SafetyIssue.DIFFERENT_DISPLAY)
+        }
+        if (apps[0].displayId != 0) {
+            return SafetyAssessment(null, SafetyIssue.UNSUPPORTED_DISPLAY)
         }
         val ordered = apps.sortedBy { it.bounds.left }
         val a = ordered[0]
@@ -155,3 +163,4 @@ object AppPairPolicy {
             target.width.toLong() * target.height / 5
     }
 }
+

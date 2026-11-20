@@ -3,6 +3,7 @@ package com.hebi.dualtouch
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
 import android.accessibilityservice.AccessibilityServiceInfo
+import android.app.KeyguardManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -12,11 +13,13 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import com.hebi.dualtouch.core.AppPairApproval
@@ -66,6 +69,7 @@ class TouchMirrorService : AccessibilityService() {
             dispatching = false
             setCapture(false)
             downPoint = null
+            overlay?.restoreAfterDispatch()
             statusText = "20초 자동 중지 · Thumb는 표시 중"
         } else {
             stop("20초 실험 시간이 끝났습니다.")
@@ -150,6 +154,7 @@ class TouchMirrorService : AccessibilityService() {
         } else {
             setCapture(false)
             downPoint = null
+            overlay?.restoreAfterDispatch()
             statusText = "입력 중지 · Thumb는 계속 표시"
         }
         refreshCapture()
@@ -359,7 +364,19 @@ class TouchMirrorService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        if (armed && !dispatching) refreshCapture()
+        if (!armed) return
+        if (!environmentAllowsInput()) {
+            stop("잠금·화면 꺼짐·동의 철회·터치 탐색 상태로 입력 중지")
+            return
+        }
+        if (dispatching) {
+            val assessment = inspectTestWindows()
+            if (!assessment.allowed || assessment.pair != activeWindowPair) {
+                stop("입력 중 창 또는 민감 화면이 변경되어 중지")
+            }
+        } else {
+            refreshCapture()
+        }
     }
 
     override fun onInterrupt() {
@@ -544,7 +561,7 @@ class TouchMirrorService : AccessibilityService() {
     }
 
     private fun canDispatch(token: Long): Boolean {
-        if (!dispatchGeneration.valid(token) || !armed) return false
+        if (!dispatchGeneration.valid(token) || !armed || !environmentAllowsInput()) return false
         if (mode == MirrorMode.THUMB &&
             (!thumbRunning || menuPaused || overlay?.isCalibrating == true)
         ) return false
@@ -649,6 +666,10 @@ class TouchMirrorService : AccessibilityService() {
 
     private fun refreshCapture() {
         if (!armed || dispatching) return
+        if (!environmentAllowsInput()) {
+            stop("잠금·화면 꺼짐·동의 철회·터치 탐색 상태로 입력 중지")
+            return
+        }
         val assessment = inspectTestWindows()
         val pair = assessment.pair
         if (mode == MirrorMode.THUMB) {
@@ -673,6 +694,7 @@ class TouchMirrorService : AccessibilityService() {
                 activeWindowPair = null
                 downPoint = null
                 setCapture(false)
+                overlay?.restoreAfterDispatch()
                 statusText = "Thumb 대기: " + WindowSafetyPolicy.message(assessment.issue)
                 return
             }
@@ -750,7 +772,7 @@ class TouchMirrorService : AccessibilityService() {
     }
 
     private fun containsSensitiveInput(root: AccessibilityNodeInfo?): Boolean {
-        if (root == null) return false
+        if (root == null) return true
         val stack = ArrayDeque<AccessibilityNodeInfo>()
         stack.add(root)
         var visited = 0
@@ -765,6 +787,12 @@ class TouchMirrorService : AccessibilityService() {
         }
         return false
     }
+
+    private fun environmentAllowsInput(): Boolean =
+        AppearanceSettings(this).accessibilityDisclosureAccepted &&
+            getSystemService(PowerManager::class.java)?.isInteractive == true &&
+            getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == false &&
+            getSystemService(AccessibilityManager::class.java)?.isTouchExplorationEnabled == false
 
     private fun inspectTestWindows(): SafetyAssessment {
         val visible = observeWindows()
@@ -804,3 +832,4 @@ class TouchMirrorService : AccessibilityService() {
         super.onDestroy()
     }
 }
+

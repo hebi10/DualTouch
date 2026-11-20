@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="privacy_policy_url" translatable="false">https://blogflow.kr/dualtouch-privacy-policy/</string>
     <string name="app_name">DualTouch POC</string>
     <string name="service_label">DualTouch 실험 서비스</string>
     <string name="service_description">현재 사용자가 직접 승인한 두 앱의 창을 확인하고 한쪽에서 받은 수동 터치를 반대쪽에 재생합니다. 원본 터치가 취소될 수 있으며 볼륨 아래 버튼으로 중지합니다.</string>
 </resources>
+

@@ -6,6 +6,8 @@ import android.os.Looper
 import android.content.Intent
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.net.Uri
+import android.content.ActivityNotFoundException
 import android.provider.Settings
 import android.view.Gravity
 import android.view.ViewGroup
@@ -16,6 +18,7 @@ import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 
 class MainActivity : Activity() {
     private enum class Page { INTRO, HOME, PERMISSION, GUIDE, CONFIRM, ADVANCED, HELP }
@@ -251,11 +254,19 @@ class MainActivity : Activity() {
             "연결 후 Thumb의 실행을 누릅니다. 필요하면 영점을 조절하고 볼륨 아래로 긴급 중지합니다.")
         addAction("분할 화면 안내", false) { go(Page.GUIDE) }
         addAction("접근성 권한 안내", false) { go(Page.PERMISSION) }
+        addAction("개인정보처리방침", false) {
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(getString(R.string.privacy_policy_url))))
+            } catch (_: ActivityNotFoundException) {
+                Toast.makeText(this, "웹 브라우저를 사용할 수 없습니다.", Toast.LENGTH_LONG).show()
+            }
+        }
 
         section("기술 검증")
         card("Android 입력 처리 제한",
             "실제 앱의 원본 터치가 취소될 수 있습니다. 명시적으로 연결한 앱 두 개만 제어하며 " +
-                "키보드·보안/금융·결제 화면에서는 자동 입력을 중지합니다.")
+                "감지한 키보드·비밀번호·보호 앱에서는 입력을 차단합니다. " +
+                "모든 민감 화면을 판별할 수 없으므로 결제·송금·삭제 등에는 사용하지 마세요.")
         addAction("오류·중지 안내", false) { go(Page.HELP) }
         root = pageRoot
     }
@@ -266,11 +277,13 @@ class MainActivity : Activity() {
             "사용자가 선택한 두 앱의 창 위치와 터치 입력을 확인하기 위해 접근성 서비스를 사용합니다. " +
                 "화면 위에 Thumb 메뉴를 표시하고, 사용자가 실행을 선택한 동안에만 입력합니다.")
         card("데이터 처리",
-            "화면 문자·스크린샷·계정 정보·터치 좌표 스트림을 서버에 보내지 않습니다. " +
-                "영점 보정값과 화면 표시 설정만 기기에 저장합니다.")
+            "패키지명·창 식별자·위치·포커스, 터치 좌표·시간, 비밀번호·편집 가능 여부 등 화면 구조를 " +
+                "기기 안에서 일시 확인합니다. 이 정보를 저장하거나 외부로 전송하지 않습니다. " +
+                "표시·방향·영점 설정과 소개 확인·동의 여부만 기기에 저장합니다.")
         card("사용 범위",
             "실제 분할 화면의 두 앱은 현재 세션에서 사용자가 직접 승인해야 합니다. " +
-                "금융·비밀번호·결제·텍스트 입력 화면은 차단하며 원래 터치가 취소될 수 있습니다.")
+                "감지한 위험 화면은 차단하지만 모든 결제·금융·보안 화면의 식별은 보장하지 않습니다. " +
+                "원래 터치가 취소될 수 있으며 민감한 작업에는 사용하지 마세요.")
         card("사용자 동의 안내",
             "접근성 서비스는 사용자가 선택한 두 앱의 패키지명·창 위치·터치 이벤트를 확인합니다. " +
                 "원래 터치가 취소될 수 있으니 민감한 화면에서는 사용하지 않고 볼륨 아래 키로 중지하세요.",
@@ -390,3 +403,4 @@ class MainActivity : Activity() {
         }
     }
 }
+

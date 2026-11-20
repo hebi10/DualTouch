@@ -5,7 +5,7 @@ plugins {
 
 android {
     namespace = "com.hebi.dualtouch.probe"
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         minSdk = 34
@@ -20,3 +20,4 @@ android {
         jvmTarget = "17"
     }
 }
+
