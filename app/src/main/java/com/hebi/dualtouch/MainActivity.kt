@@ -220,7 +220,7 @@ class MainActivity : Activity() {
 
         section("플로팅 컨트롤")
         addBody("플로팅 표시를 누르면 원형 Thumb가 나타납니다. " +
-            "두 앱을 분할로 연 뒤 Thumb의 좌/우 선택에서 앱 두 개를 직접 연결하세요.", secondary = true)
+            "앱 두 개를 좌우 또는 상하로 분할한 뒤 Thumb에서 앱을 연결하세요.", secondary = true)
         floatingButton = addAction(floatingButtonLabel(), top = 14) {
             val currentService = TouchMirrorService.current
             when {
@@ -247,7 +247,7 @@ class MainActivity : Activity() {
         root = secondary
         section("사용 준비", if (viewport.useTwoPanes) 0 else 22)
         card("01 · 실제 앱 두 개 분할",
-            "Android 분할 화면에서 원하는 앱 두 개를 좌우에 배치합니다. 동일 앱은 멀티 인스턴스를 지원해야 합니다.")
+            "Android 분할 화면에 원하는 앱 두 개를 좌우 또는 상하로 배치합니다. 동일 앱은 멀티 인스턴스를 지원해야 합니다.")
         card("02 · 좌/우 앱 연결",
             "Thumb → 좌/우 선택 · 앱 연결 → 표시된 앱을 확인하고 직접 누를 방향을 승인합니다.")
         card("03 · 실행·영점",
@@ -312,11 +312,12 @@ class MainActivity : Activity() {
         card("1 · 플로팅 표시",
             "접근성 서비스 목적에 동의하고 Android 설정에서 활성화한 뒤 DualTouch 홈에서 플로팅 표시를 선택합니다.")
         card("2 · 실제 앱 두 개 분할",
-            "Android의 좌우 분할 화면에서 원하는 앱을 엽니다. 같은 앱을 두 번 실행하려면 해당 앱·OS가 독립 실행을 지원해야 합니다.")
+            "Android의 좌우 또는 상하 분할 화면에서 원하는 앱을 엽니다. 같은 앱을 두 번 실행하려면 앱·OS의 독립 실행 지원이 필요합니다.")
         card("3 · 앱 연결과 방향 선택",
             "Thumb를 누른 다음 '좌/우 선택 · 앱 연결'에서 좌우 앱 패키지를 확인하고 직접 터치할 방향을 선택합니다.")
         card("4 · 실행·영점 조절",
-            "Thumb의 실행을 누르고 필요한 경우 빨간 직접 터치 점과 흰 자동 터치 점의 상대 위치를 조절합니다.")
+            "Thumb의 영점 조절에서 가로·세로 기준선 방향과 위치(20~80%)를 바꾸고, 빨강/흰색 점으로 위치를 보정합니다. " +
+                "실제 분할 방향은 Android 분할 화면에서 변경한 뒤 앱을 다시 연결해야 합니다.")
         card("5 · 긴급 중지",
             "Thumb의 중지 또는 기기 볼륨 아래 버튼으로 종료합니다. 화면 구성이 바뀌면 앱 연결을 다시 승인해야 합니다.")
         addAction("홈에서 플로팅 표시", top = 20) { go(Page.HOME) }

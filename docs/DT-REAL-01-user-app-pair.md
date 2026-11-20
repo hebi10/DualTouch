@@ -32,3 +32,6 @@
 기획 URL: https://docs.google.com/document/d/1iTtV9sP_YaZkVkYxD2Wf8OY6D1BiWLlzG-slIqnyf3Q/edit
 Android API: https://developer.android.com/reference/android/accessibilityservice/AccessibilityService
 Google Play 접근성 정책: https://support.google.com/googleplay/android-developer/answer/10964491?hl=ko
+
+## DT-017 상하 분할 + 보정 기준선
+사용자가 선택한 두 앱의 배열은 좌우 분할뿐 아니라 상하 분할도 허용합니다. 사용자 앱 연결 메뉴에는 실제 확인된 '왼쪽/오른쪽' 또는 '위쪽/아래쪽'을 표시합니다. 영점 조절에서 가로·세로 기준선 방향을 전환하고 위치를 20~80%로 조절할 수 있습니다. 기준선은 실제 Android 분할 경계가 아니므로 시스템의 분할 방향·비율을 자동 변경하지 않습니다. 좌우/상하 배치와 터치 방향별 영점 오프셋은 별도로 보존하며 해당 배치의 기준선 설정은 초기화할 수 있습니다. 실제 폴드/태블릿 QA는 아직 미실행.

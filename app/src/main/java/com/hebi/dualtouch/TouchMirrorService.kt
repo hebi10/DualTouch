@@ -33,6 +33,7 @@ import com.hebi.dualtouch.core.SafetyAssessment
 import com.hebi.dualtouch.core.SafetyIssue
 import com.hebi.dualtouch.core.CoordinateMapper
 import com.hebi.dualtouch.core.ScreenRect
+import com.hebi.dualtouch.core.SplitOrientation
 import com.hebi.dualtouch.core.TapPoint
 import com.hebi.dualtouch.core.TestPackages
 import com.hebi.dualtouch.core.TouchSide
@@ -101,8 +102,14 @@ class TouchMirrorService : AccessibilityService() {
     }
     private val calibrationPrefs by lazy { getSharedPreferences("thumb_zero_v1", MODE_PRIVATE) }
 
-    private fun calibrationKey(side: TouchSide): String =
-        if (side == TouchSide.LEFT) "left" else "right"
+    private fun calibrationKey(side: TouchSide): String {
+        val orientation = activeWindowPair?.orientation ?: SplitOrientation.HORIZONTAL
+        return if (orientation == SplitOrientation.VERTICAL) {
+            if (side == TouchSide.LEFT) "upper" else "lower"
+        } else {
+            if (side == TouchSide.LEFT) "left" else "right"
+        }
+    }
 
     private fun currentCalibration(side: TouchSide = sourceSide): CalibrationOffset {
         val prefix = calibrationKey(side)
@@ -186,7 +193,8 @@ class TouchMirrorService : AccessibilityService() {
         activeStarted = true
         sourceSide = side
         calibrationPrefs.edit().putString("source_side", side.name).apply()
-        statusText = "연결 완료: ${pair.left.packageName} / ${pair.right.packageName}. 메뉴에서 실행하세요."
+        val arrangement = if (pair.orientation == SplitOrientation.HORIZONTAL) "좌·우" else "상·하"
+        statusText = "$arrangement 연결 완료: ${pair.left.packageName} / ${pair.right.packageName}. Thumb에서 실행하세요."
         return true
     }
 
@@ -713,8 +721,14 @@ class TouchMirrorService : AccessibilityService() {
             statusText = when {
                 overlay?.isCalibrating == true ->
                     "영점 편집 중 · 직접 기준점과 자동 기준점 정렬"
-                thumbRunning ->
-                    "실행 중: ${if (sourceSide == TouchSide.LEFT) "좌 → 우" else "우 → 좌"} · 20초 제한"
+                thumbRunning -> {
+                    val direction = if (pair.orientation == SplitOrientation.HORIZONTAL) {
+                        if (sourceSide == TouchSide.LEFT) "좌 → 우" else "우 → 좌"
+                    } else {
+                        if (sourceSide == TouchSide.LEFT) "상 → 하" else "하 → 상"
+                    }
+                    "실행 중: $direction · 20초 제한"
+                }
                 else -> "Thumb 대기 · 메뉴에서 실행·중지 / 좌·우 / 영점"
             }
             return
