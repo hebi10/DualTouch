@@ -325,7 +325,7 @@ class MainActivity : Activity() {
         if (launchSystemSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS)) return
         val opened = launchSystemSettings(Settings.ACTION_SETTINGS)
         val path = "설정 → 접근성 → 설치된 앱 → DualTouch"
-        val message = if (opened) "$path 순서로 이동하세요." else "설정을 열 수 없습니다. $path에서 직접 설정하세요."
+        val message = if (opened) "$path 순서로 이동하세요." else "설정을 열 수 없습니다. ${path}에서 직접 설정하세요."
         Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     }
 
