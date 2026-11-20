@@ -33,6 +33,8 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
+      - name: Release pipeline regression tests
+        run: python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
       - name: Restricted permission audit
         run: |
           if grep -nE 'android.permission.(INTERNET|SYSTEM_ALERT_WINDOW|QUERY_ALL_PACKAGES|BIND_DEVICE_ADMIN)' app/src/main/AndroidManifest.xml; then
@@ -84,12 +86,12 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Capture real Android 16 UI
+      - name: Capture real Android 15 UI
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         env:
           SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         with:
-          api-level: 36
+          api-level: 35
           target: google_apis
           arch: x86_64
           profile: pixel_6

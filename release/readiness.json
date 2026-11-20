@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "reviewed_runtime_digest": "",
+  "device_qa_passed": false,
+  "device_qa_evidence_url": "",
+  "accessibility_review_ready": false,
+  "accessibility_demo_url": "",
+  "upload_certificate_sha256": "",
+  "closed_track_id": ""
+}

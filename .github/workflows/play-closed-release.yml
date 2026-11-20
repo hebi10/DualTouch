@@ -1,0 +1,104 @@
+name: DualTouch same internal version to closed testing
+on:
+  workflow_dispatch:
+    inputs:
+      expected_main_sha:
+        description: Exact reviewed current main SHA
+        type: string
+        required: true
+      approved:
+        description: Explicit approval for this stage and frozen source
+        type: boolean
+        required: true
+        default: false
+      internal_run_id:
+        description: Successful manual internal publishing run ID
+        required: true
+        type: string
+      aab_sha256:
+        description: SHA-256 of the approved existing AAB bytes
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: dualtouch-play-release
+  cancel-in-progress: false
+env:
+  EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+  RELEASE_APPROVED: ${{ inputs.approved }}
+  GH_TOKEN: ${{ github.token }}
+  BUNDLETOOL_JAR: ${{ runner.temp }}/bundletool.jar
+  RELEASE_STAGE: closed
+  SOURCE_RUN_ID: ${{ inputs.internal_run_id }}
+  AAB_SHA256: ${{ inputs.aab_sha256 }}
+jobs:
+  publish:
+    if: github.repository == 'hebi10/DualTouch' && github.ref == 'refs/heads/main'
+    environment: google-play
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Require exact main CI, physical QA, policy evidence and explicit approval
+        run: python3 scripts/release/release.py guard
+      - uses: actions/download-artifact@v4
+        with:
+          name: dualtouch-internal-receipt-${{ inputs.internal_run_id }}
+          run-id: ${{ inputs.internal_run_id }}
+          github-token: ${{ github.token }}
+          path: candidate
+      - name: Select existing app-scoped Play authentication
+        id: method
+        env:
+          PROVIDER: ${{ vars.PLAY_WORKLOAD_IDENTITY_PROVIDER }}
+          ACCOUNT: ${{ vars.PLAY_SERVICE_ACCOUNT }}
+          SERVICE_JSON: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$PROVIDER" ] && [ -n "$ACCOUNT" ]; then
+            echo mode=wif >> "$GITHUB_OUTPUT"
+          elif [ -n "$SERVICE_JSON" ]; then
+            echo mode=json >> "$GITHUB_OUTPUT"
+          else
+            echo 'Existing app-scoped Play authentication is unavailable.' >&2
+            exit 1
+          fi
+      - uses: google-github-actions/auth@v3
+        if: steps.method.outputs.mode == 'wif'
+        id: wif
+        with:
+          workload_identity_provider: ${{ vars.PLAY_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.PLAY_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+          create_credentials_file: false
+          export_environment_variables: false
+      - uses: google-github-actions/auth@v3
+        if: steps.method.outputs.mode == 'json'
+        id: json
+        with:
+          credentials_json: ${{ secrets.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Promote the completed internal version without uploading or rebuilding
+        env:
+          PLAY_ACCESS_TOKEN: ${{ steps.wif.outputs.access_token || steps.json.outputs.access_token }}
+        run: python3 scripts/release/release.py closed
+      - name: Preserve sanitized API commit and readback receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-closed-receipt-${{ github.run_id }}
+          path: play-receipt/receipt.json
+          retention-days: 30
+          if-no-files-found: warn
