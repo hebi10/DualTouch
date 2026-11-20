@@ -1,43 +1,43 @@
-name: DualTouch first internal QA AAB
+name: DualTouch internal QA AAB
 on:
   workflow_dispatch:
     inputs:
+      expected_main_sha:
+        description: Exact current main commit to sign for internal QA
+        type: string
+        required: true
       approved:
-        description: Sign the fixed source for the existing internal tester list
+        description: Sign this commit for the existing internal tester list
         type: boolean
         required: true
-        default: false
-      download_existing:
-        description: Provide the already-signed QA AAB as a direct download
-        type: boolean
-        required: false
         default: false
 
 permissions:
   contents: read
   actions: read
-  pull-requests: read
+
+concurrency:
+  group: dualtouch-play-release
+  cancel-in-progress: false
 
 env:
-  CANDIDATE_SHA: 14d7360de4ce253659bbd99ab00c9b565737c037
-  CANDIDATE_CI: '44700490967'
+  CANDIDATE_SHA: ${{ inputs.expected_main_sha }}
 
 jobs:
   bundle:
-    if: github.repository == 'hebi10/DualTouch' && github.ref == 'refs/heads/main' && inputs.approved && !inputs.download_existing
+    if: github.repository == 'hebi10/DualTouch' && github.ref == 'refs/heads/main' && inputs.approved
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Require the approved PR head and its successful Android CI
+      - name: Require the approved current main commit and successful Android CI
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/pulls/1" \
-            | jq -e --arg sha "$CANDIDATE_SHA" --arg repo "$GITHUB_REPOSITORY" \
-              '.state == "open" and .head.sha == $sha and .head.repo.full_name == $repo' > /dev/null
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_CI" \
+          test "$CANDIDATE_SHA" = "$GITHUB_SHA"
+          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha)" = "$CANDIDATE_SHA"
+          gh api "repos/$GITHUB_REPOSITORY/actions/workflows/android-ci.yml/runs?branch=main&event=push&head_sha=$CANDIDATE_SHA" \
             | jq -e --arg sha "$CANDIDATE_SHA" \
-              '.head_sha == $sha and .path == ".github/workflows/android-ci.yml" and .event == "pull_request" and .status == "completed" and .conclusion == "success"' > /dev/null
+              '.workflow_runs[0] | .head_sha == $sha and .status == "completed" and .conclusion == "success"' > /dev/null
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.CANDIDATE_SHA }}
@@ -68,6 +68,7 @@ jobs:
           gradle --no-daemon :app:bundleRelease --max-workers=2
           PYTHONPATH=scripts/release python3 - <<'PY'
           import os
+          import re
           from pathlib import Path
           import shutil
 
@@ -80,37 +81,24 @@ jobs:
           identity['device_qa_passed'] = config['device_qa_passed']
           identity['accessibility_review_ready'] = config['accessibility_review_ready']
           write_json('play-dist/manifest.json', identity)
-          shutil.copyfile(bundle, 'play-dist/DualTouch.aab')
+          version = identity['version_name']
+          if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,49}', version):
+              raise ValueError('Version name is not safe for an artifact filename.')
+          shutil.copyfile(bundle, f'play-dist/DualTouch-{version}-internal-qa.aab')
           print(Path('play-dist/manifest.json').read_text(encoding='utf-8'))
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
-          name: dualtouch-internal-qa-aab-${{ github.run_id }}
-          path: play-dist/
+          path: play-dist/*.aab
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v7
+        with:
+          path: play-dist/manifest.json
+          archive: false
           if-no-files-found: error
           retention-days: 14
       - name: Remove private signing files
         if: always()
         run: python3 scripts/release/release.py cleanup
-
-  direct-download:
-    if: github.repository == 'hebi10/DualTouch' && github.ref == 'refs/heads/main' && inputs.approved && inputs.download_existing
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dualtouch-internal-qa-aab-44701773274
-          run-id: '44701773274'
-          github-token: ${{ github.token }}
-          path: signed-candidate
-      - name: Verify and copy the existing approved AAB bytes
-        run: |
-          printf '%s  %s\n' 78f6774335de3beb4aaef195e91c1b2c927bb861dfbcd4912d057b53e5883d99 signed-candidate/DualTouch.aab | sha256sum --check
-          cp signed-candidate/DualTouch.aab DualTouch-0.0.1-poc-internal-qa.aab
-      - uses: actions/upload-artifact@v7
-        with:
-          path: DualTouch-0.0.1-poc-internal-qa.aab
-          archive: false
-          if-no-files-found: error
-          retention-days: 14
