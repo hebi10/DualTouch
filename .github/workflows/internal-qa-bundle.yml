@@ -7,6 +7,11 @@ on:
         type: boolean
         required: true
         default: false
+      download_existing:
+        description: Provide the already-signed QA AAB as a direct download
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -19,7 +24,7 @@ env:
 
 jobs:
   bundle:
-    if: github.repository == 'hebi10/DualTouch' && github.ref == 'refs/heads/main' && inputs.approved
+    if: github.repository == 'hebi10/DualTouch' && github.ref == 'refs/heads/main' && inputs.approved && !inputs.download_existing
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -87,3 +92,25 @@ jobs:
       - name: Remove private signing files
         if: always()
         run: python3 scripts/release/release.py cleanup
+
+  direct-download:
+    if: github.repository == 'hebi10/DualTouch' && github.ref == 'refs/heads/main' && inputs.approved && inputs.download_existing
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dualtouch-internal-qa-aab-44701773274
+          run-id: '44701773274'
+          github-token: ${{ github.token }}
+          path: signed-candidate
+      - name: Verify and copy the existing approved AAB bytes
+        run: |
+          printf '%s  %s\n' 78f6774335de3beb4aaef195e91c1b2c927bb861dfbcd4912d057b53e5883d99 signed-candidate/DualTouch.aab | sha256sum --check
+          cp signed-candidate/DualTouch.aab DualTouch-0.0.1-poc-internal-qa.aab
+      - uses: actions/upload-artifact@v7
+        with:
+          path: DualTouch-0.0.1-poc-internal-qa.aab
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
