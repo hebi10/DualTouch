@@ -97,7 +97,7 @@ class AppPairPolicyTest {
     }
 
     @Test fun rejectsUnexpectedThirdWindowOrDifferentDisplays() {
-        assertEquals(SafetyIssue.MISSING_PAIR,
+        assertEquals(SafetyIssue.EXTRA_APPLICATION_WINDOWS,
             AppPairPolicy.select(pair() + window("com.example.chat", 30,
                 ScreenRect(0, 0, 100, 100), false), owner).issue)
         assertEquals(SafetyIssue.DIFFERENT_DISPLAY,
@@ -114,8 +114,39 @@ class AppPairPolicyTest {
             if (it.windowId == 29) it.copy(bounds = ScreenRect(300, 48, 800, 1100))
             else it
         }
-        assertEquals(SafetyIssue.MISSING_PAIR,
-            AppPairPolicy.select(overlap, owner).issue)
+        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT,
+            AppPairPolicy.select(overlap + ObservedWindow(WindowLayer.SPLIT_DIVIDER, "android",
+                ScreenRect(495, 400, 510, 600)), owner).issue)
+    }
+
+    @Test fun onlyTrustsMatchingSystemDividerForUnevenSplit() {
+        val smaller = window("com.example.notes", 17, ScreenRect(0, 48, 320, 1100), true)
+        val larger = window("com.example.browser", 29, ScreenRect(340, 48, 1020, 1100), false)
+        val divider = ObservedWindow(WindowLayer.SPLIT_DIVIDER, "android",
+            ScreenRect(320, 400, 340, 600))
+        val windows = listOf(smaller, larger)
+        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT, AppPairPolicy.select(windows, owner).issue)
+        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT,
+            AppPairPolicy.select(windows + divider.copy(displayId = 1), owner).issue)
+        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT, AppPairPolicy.select(
+            windows + divider.copy(bounds = ScreenRect(700, 400, 720, 600)), owner).issue)
+        assertTrue(AppPairPolicy.select(windows + divider, owner).allowed)
+
+        val upper = smaller.copy(bounds = ScreenRect(0, 48, 1020, 380))
+        val lower = larger.copy(bounds = ScreenRect(0, 400, 1020, 1100))
+        assertEquals(SplitOrientation.VERTICAL, AppPairPolicy.select(
+            listOf(lower, upper, divider.copy(bounds = ScreenRect(400, 380, 620, 400))),
+            owner).pair?.orientation)
+    }
+
+    @Test fun neverAllowsWindowControlsToOverlapEitherTarget() {
+        val control = ObservedWindow(WindowLayer.WINDOW_CONTROL, null,
+            ScreenRect(100, 0, 200, 48))
+        assertTrue(AppPairPolicy.select(pair() + control, owner).allowed)
+        assertEquals(SafetyIssue.BLOCKING_WINDOW_CONTROL, AppPairPolicy.select(
+            pair() + control.copy(bounds = ScreenRect(100, 0, 200, 80)), owner).issue)
+        assertEquals(SafetyIssue.UNKNOWN_WINDOW, AppPairPolicy.select(
+            pair() + control.copy(layer = WindowLayer.OTHER), owner).issue)
     }
 
     @Test fun treatsOwnOverlayAsAllowedButUnknownSystemDialogAsUnsafe() {

@@ -72,6 +72,7 @@ object AppPairPolicy {
         controllerPackage: String,
     ): SafetyAssessment {
         val apps = windows.filter { it.layer == WindowLayer.APPLICATION }
+        if (apps.size > 2) return SafetyAssessment(null, SafetyIssue.EXTRA_APPLICATION_WINDOWS)
         if (apps.size != 2 || apps.any { it.packageName.isNullOrBlank() }) {
             return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
         }
@@ -92,10 +93,14 @@ object AppPairPolicy {
         }
         val first = apps[0]
         val second = apps[1]
+        val divider = windows.singleOrNull {
+            it.layer == WindowLayer.SPLIT_DIVIDER && it.displayId == first.displayId
+        }?.bounds
         val pair = SplitGeometry.detect(
             WindowSnapshot(first.packageName!!, first.bounds, first.displayId, first.windowId),
-            WindowSnapshot(second.packageName!!, second.bounds, second.displayId, second.windowId)
-        ) ?: return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
+            WindowSnapshot(second.packageName!!, second.bounds, second.displayId, second.windowId),
+            divider,
+        ) ?: return SafetyAssessment(null, SafetyIssue.NOT_SPLIT_LAYOUT)
 
         if (apps.none { it.focused }) {
             return SafetyAssessment(null, SafetyIssue.NO_FOCUSED_TARGET)
@@ -108,6 +113,13 @@ object AppPairPolicy {
                 it.packageName != controllerPackage
         }) {
             return SafetyAssessment(null, SafetyIssue.ACCESSIBILITY_OVERLAY)
+        }
+        if (windows.any {
+            it.layer == WindowLayer.WINDOW_CONTROL && it.displayId == first.displayId &&
+                (!it.bounds.isValid || it.bounds.overlaps(pair.left.bounds) ||
+                    it.bounds.overlaps(pair.right.bounds))
+        }) {
+            return SafetyAssessment(null, SafetyIssue.BLOCKING_WINDOW_CONTROL)
         }
         if (windows.any { it.layer == WindowLayer.OTHER }) {
             return SafetyAssessment(null, SafetyIssue.UNKNOWN_WINDOW)

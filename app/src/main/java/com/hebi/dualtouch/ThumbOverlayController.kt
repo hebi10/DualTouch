@@ -18,6 +18,8 @@ import android.widget.SeekBar
 import android.widget.TextView
 import com.hebi.dualtouch.core.CalibrationOffset
 import com.hebi.dualtouch.core.SafetyAssessment
+import com.hebi.dualtouch.core.AppPairApproval
+import com.hebi.dualtouch.core.SafetyIssue
 import com.hebi.dualtouch.core.WindowSafetyPolicy
 import com.hebi.dualtouch.core.CalibrationGuide
 import com.hebi.dualtouch.core.GuideAxis
@@ -43,9 +45,9 @@ internal class ThumbOverlayController(
     private val sideProvider: () -> TouchSide,
     private val runningProvider: () -> Boolean,
     private val calibrationProvider: () -> CalibrationOffset,
-    private val onRunToggle: () -> Unit,
+    private val onRunToggle: () -> SafetyIssue,
     private val candidateProvider: () -> SafetyAssessment,
-    private val onConnectApps: (TouchSide) -> Boolean,
+    private val onConnectApps: (TouchSide, AppPairApproval) -> SafetyIssue,
     private val onCalibrationStart: () -> Unit,
     private val onCalibrationSaved: (CalibrationOffset) -> Unit,
     private val onCalibrationReset: () -> Unit,
@@ -214,8 +216,11 @@ internal class ThumbOverlayController(
         onMenuVisibilityChanged(true)
         val column = panel()
         addButton(column, if (runningProvider()) "중지" else "실행") {
-            onRunToggle()
-            closeMenu()
+            when (val issue = onRunToggle()) {
+                SafetyIssue.NONE -> closeMenu()
+                SafetyIssue.UNAPPROVED_PAIR -> openPairSelection()
+                else -> openPairSelection(issue)
+            }
         }
         addButton(column, "좌/우 선택 · 앱 연결") {
             openPairSelection()
@@ -234,7 +239,7 @@ internal class ThumbOverlayController(
      * Display packages captured from the two currently visible app windows.
      * The user must explicitly approve the current pair AND the input direction.
      */
-    private fun openPairSelection() {
+    private fun openPairSelection(previousIssue: SafetyIssue? = null) {
         closeMenu()
         onMenuVisibilityChanged(true)
         val column = panel()
@@ -247,7 +252,17 @@ internal class ThumbOverlayController(
             setPadding(dp(10), dp(8), dp(10), dp(8))
         }
         column.addView(title)
+        val issue = if (snapshot.allowed) previousIssue else snapshot.issue
+        if (issue != null) {
+            column.addView(TextView(context).apply {
+                text = WindowSafetyPolicy.message(issue)
+                textSize = 13f
+                setTextColor(Color.DKGRAY)
+                setPadding(dp(10), dp(6), dp(10), dp(8))
+            })
+        }
         if (snapshot.allowed && pair != null) {
+            val approval = AppPairApproval.fromPair(pair)
             val detail = TextView(context).apply {
                 val firstLabel = if (pair.orientation == SplitOrientation.HORIZONTAL) "왼쪽" else "위쪽"
                 val secondLabel = if (pair.orientation == SplitOrientation.HORIZONTAL) "오른쪽" else "아래쪽"
@@ -264,46 +279,32 @@ internal class ThumbOverlayController(
             } else {
                 "위쪽 직접 → 아래쪽 자동 연결"
             }) {
-                if (onConnectApps(TouchSide.LEFT)) {
-                    updateSourceSide()
-                    closeMenu()
-                } else {
-                    closeMenu()
-                    openPairSelection()
-                }
+                confirmPair(TouchSide.LEFT, approval)
             }
             addButton(column, if (pair.orientation == SplitOrientation.HORIZONTAL) {
                 "오른쪽 직접 → 왼쪽 자동 연결"
             } else {
                 "아래쪽 직접 → 위쪽 자동 연결"
             }) {
-                if (onConnectApps(TouchSide.RIGHT)) {
-                    updateSourceSide()
-                    closeMenu()
-                } else {
-                    closeMenu()
-                    openPairSelection()
-                }
+                confirmPair(TouchSide.RIGHT, approval)
             }
-        } else {
-            column.addView(TextView(context).apply {
-                text = WindowSafetyPolicy.message(snapshot.issue) +
-                    "\n사용하려는 앱 두 개를 좌우 또는 상하로 분할하세요. " +
-                    "보안·결제·입력 화면은 연결하지 않습니다."
-                textSize = 13f
-                setTextColor(Color.DKGRAY)
-                setPadding(dp(10), dp(8), dp(10), dp(8))
-            })
         }
-        addButton(column, "다시 검색") {
-            closeMenu()
-            openPairSelection()
-        }
+        addButton(column, "다시 검색") { openPairSelection() }
         addButton(column, "닫기") { closeMenu() }
         val at = IntArray(2)
         thumb?.view?.getLocationOnScreen(at)
         if (!showMenu(column, 292, at[0] + dp(25), at[1])) {
             onMenuVisibilityChanged(false)
+        }
+    }
+
+    private fun confirmPair(side: TouchSide, approval: AppPairApproval) {
+        val issue = onConnectApps(side, approval)
+        if (issue == SafetyIssue.NONE) {
+            updateSourceSide()
+            closeMenu()
+        } else {
+            openPairSelection(issue)
         }
     }
 

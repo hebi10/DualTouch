@@ -13,6 +13,9 @@ data class ScreenRect(
     val height: Int get() = bottom - top
     val isValid: Boolean get() = width > 0 && height > 0
 
+    fun overlaps(other: ScreenRect): Boolean =
+        left < other.right && right > other.left && top < other.bottom && bottom > other.top
+
     fun contains(x: Float, y: Float, inset: Float = 0f): Boolean =
         isValid && x >= left + inset && x < right - inset &&
             y >= top + inset && y < bottom - inset
@@ -70,7 +73,11 @@ fun WindowPair.target(side: TouchSide): WindowSnapshot =
     if (side == TouchSide.LEFT) right else left
 
 object SplitGeometry {
-    fun detect(first: WindowSnapshot, second: WindowSnapshot): WindowPair? {
+    fun detect(
+        first: WindowSnapshot,
+        second: WindowSnapshot,
+        systemDivider: ScreenRect? = null,
+    ): WindowPair? {
         val a = first.bounds
         val b = second.bounds
         if (!a.isValid || !b.isValid || first.displayId != second.displayId) return null
@@ -80,7 +87,8 @@ object SplitGeometry {
         val horizontal = left.bounds.right <= right.bounds.left &&
             overlapFraction(left.bounds.top, left.bounds.bottom,
                 right.bounds.top, right.bounds.bottom) >= 0.8f &&
-            sizeRatio(left.bounds.width, right.bounds.width) >= 0.75f
+            (sizeRatio(left.bounds.width, right.bounds.width) >= 0.75f ||
+                dividerSeparates(left.bounds, right.bounds, systemDivider, SplitOrientation.HORIZONTAL))
         if (horizontal) return WindowPair(left, right, SplitOrientation.HORIZONTAL)
 
         val upper = if (a.top <= b.top) first else second
@@ -88,9 +96,27 @@ object SplitGeometry {
         val vertical = upper.bounds.bottom <= lower.bounds.top &&
             overlapFraction(upper.bounds.left, upper.bounds.right,
                 lower.bounds.left, lower.bounds.right) >= 0.8f &&
-            sizeRatio(upper.bounds.height, lower.bounds.height) >= 0.75f
+            (sizeRatio(upper.bounds.height, lower.bounds.height) >= 0.75f ||
+                dividerSeparates(upper.bounds, lower.bounds, systemDivider, SplitOrientation.VERTICAL))
         if (vertical) return WindowPair(upper, lower, SplitOrientation.VERTICAL)
         return null
+    }
+
+    private fun dividerSeparates(
+        first: ScreenRect,
+        second: ScreenRect,
+        divider: ScreenRect?,
+        orientation: SplitOrientation,
+    ): Boolean {
+        if (divider?.isValid != true) return false
+        val x = divider.left + divider.width / 2
+        val y = divider.top + divider.height / 2
+        return when (orientation) {
+            SplitOrientation.HORIZONTAL ->
+                x in first.right..second.left && y in max(first.top, second.top) until min(first.bottom, second.bottom)
+            SplitOrientation.VERTICAL ->
+                y in first.bottom..second.top && x in max(first.left, second.left) until min(first.right, second.right)
+        }
     }
 
     private fun overlapFraction(aStart: Int, aEnd: Int, bStart: Int, bEnd: Int): Float {

@@ -139,8 +139,8 @@ class TouchMirrorService : AccessibilityService() {
         statusText = "선택 방향의 영점이 초기화되었습니다."
     }
 
-    private fun setThumbRunning(enabled: Boolean) {
-        if (mode != MirrorMode.THUMB || !armed) return
+    private fun setThumbRunning(enabled: Boolean): SafetyIssue {
+        if (mode != MirrorMode.THUMB || !armed) return SafetyIssue.UNAPPROVED_PAIR
         val assessment = inspectTestWindows()
         val pair = assessment.pair
         if (enabled && (!assessment.allowed ||
@@ -148,8 +148,9 @@ class TouchMirrorService : AccessibilityService() {
             dispatchGeneration.invalidate()
             thumbRunning = false
             setCapture(false)
-            statusText = "실행 불가: " + WindowSafetyPolicy.message(assessment.issue)
-            return
+            val issue = if (assessment.allowed) SafetyIssue.PAIR_CHANGED else assessment.issue
+            statusText = "실행 불가: " + WindowSafetyPolicy.message(issue)
+            return issue
         }
         dispatchGeneration.invalidate()
         dispatching = false
@@ -165,22 +166,21 @@ class TouchMirrorService : AccessibilityService() {
             statusText = "입력 중지 · Thumb는 계속 표시"
         }
         refreshCapture()
+        return SafetyIssue.NONE
     }
 
-    private fun toggleThumbRunning() {
-        setThumbRunning(!thumbRunning)
-    }
+    private fun toggleThumbRunning(): SafetyIssue = setThumbRunning(!thumbRunning)
 
     private fun candidateAppPair(): SafetyAssessment =
         AppPairPolicy.select(observeWindows(), packageName)
 
-    private fun connectVisibleApps(side: TouchSide): Boolean {
-        if (!armed || mode != MirrorMode.THUMB) return false
-        val assessment = candidateAppPair()
+    private fun connectVisibleApps(side: TouchSide, displayedPair: AppPairApproval): SafetyIssue {
+        if (!armed || mode != MirrorMode.THUMB) return SafetyIssue.UNAPPROVED_PAIR
+        val assessment = AppPairPolicy.verify(observeWindows(), packageName, displayedPair)
         val pair = assessment.pair
         if (!assessment.allowed || pair == null) {
             statusText = "연결 불가: " + WindowSafetyPolicy.message(assessment.issue)
-            return false
+            return assessment.issue
         }
         dispatchGeneration.invalidate()
         dispatching = false
@@ -188,14 +188,14 @@ class TouchMirrorService : AccessibilityService() {
         downPoint = null
         setCapture(false)
         handler.removeCallbacks(activeTimeout)
-        approvedAppPair = AppPairApproval.fromPair(pair)
+        approvedAppPair = displayedPair
         activeWindowPair = pair
         activeStarted = true
         sourceSide = side
         calibrationPrefs.edit().putString("source_side", side.name).apply()
         val arrangement = if (pair.orientation == SplitOrientation.HORIZONTAL) "좌·우" else "상·하"
         statusText = "$arrangement 연결 완료: ${pair.left.packageName} / ${pair.right.packageName}. Thumb에서 실행하세요."
-        return true
+        return SafetyIssue.NONE
     }
 
     private fun prepareCalibration() {
@@ -768,6 +768,7 @@ class TouchMirrorService : AccessibilityService() {
                 AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY,
                 AccessibilityWindowInfo.TYPE_MAGNIFICATION_OVERLAY -> WindowLayer.ACCESSIBILITY
                 AccessibilityWindowInfo.TYPE_SPLIT_SCREEN_DIVIDER -> WindowLayer.SPLIT_DIVIDER
+                AccessibilityWindowInfo.TYPE_WINDOW_CONTROL -> WindowLayer.WINDOW_CONTROL
                 else -> WindowLayer.OTHER
             }
             val root = window.root
