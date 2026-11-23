@@ -1,19 +1,19 @@
 package com.hebi.dualtouch
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.os.Handler
 import android.os.Looper
 import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
 import android.net.Uri
 import android.content.ActivityNotFoundException
 import android.provider.Settings
 import android.view.Gravity
-import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
@@ -22,7 +22,7 @@ import android.widget.TextView
 import android.widget.Toast
 
 class MainActivity : Activity() {
-    private enum class Page { INTRO, HOME, PERMISSION, GUIDE, CONFIRM, ADVANCED, HELP }
+    private enum class Page { INTRO, HOME, GUIDE, CONFIRM, ADVANCED, HELP }
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private val updateStatus = object : Runnable {
@@ -95,7 +95,6 @@ class MainActivity : Activity() {
         when (page) {
             Page.INTRO -> intro()
             Page.HOME -> home()
-            Page.PERMISSION -> permission()
             Page.GUIDE -> guide()
             Page.CONFIRM -> confirm()
             Page.ADVANCED -> advanced()
@@ -225,8 +224,7 @@ class MainActivity : Activity() {
         floatingButton = addAction(floatingButtonLabel(), top = 14) {
             val currentService = TouchMirrorService.current
             when {
-                !settings.accessibilityDisclosureAccepted -> go(Page.PERMISSION)
-                currentService == null -> go(Page.PERMISSION)
+                !settings.accessibilityDisclosureAccepted || currentService == null -> requestAccessibilitySettings()
                 currentService.isFloatingVisible -> {
                     currentService.hideFloatingControl()
                     statusLabel?.text = serviceStatus()
@@ -254,7 +252,7 @@ class MainActivity : Activity() {
         card("03 · 실행·영점",
             "연결 후 Thumb의 실행을 누릅니다. 필요하면 영점을 조절하고 볼륨 아래로 긴급 중지합니다.")
         addAction("분할 화면 안내", false) { go(Page.GUIDE) }
-        addAction("접근성 권한 안내", false) { go(Page.PERMISSION) }
+        addAction("접근성 권한 안내", false) { showAccessibilityConsent() }
         addAction("개인정보처리방침", false) {
             try {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(getString(R.string.privacy_policy_url))))
@@ -272,53 +270,38 @@ class MainActivity : Activity() {
         root = pageRoot
     }
 
-    private fun permission() {
-        header("접근성 권한", "사용자가 직접 Android 시스템 설정에서 허용합니다.")
-        card("권한이 필요한 이유",
-            "사용자가 선택한 두 앱의 창 위치와 터치 입력을 확인하기 위해 접근성 서비스를 사용합니다. " +
-                "화면 위에 Thumb 메뉴를 표시하고, 사용자가 실행을 선택한 동안에만 입력합니다.")
-        card("데이터 처리",
-            "패키지명·창 식별자·위치·포커스, 터치 좌표·시간, 비밀번호·편집 가능 여부 등 화면 구조를 " +
-                "기기 안에서 일시 확인합니다. 이 정보를 저장하거나 외부로 전송하지 않습니다. " +
-                "표시·방향·영점 설정과 소개 확인·동의 여부만 기기에 저장합니다.")
-        card("사용 범위",
-            "실제 분할 화면의 두 앱은 현재 세션에서 사용자가 직접 승인해야 합니다. " +
-                "감지한 위험 화면은 차단하지만 모든 결제·금융·보안 화면의 식별은 보장하지 않습니다. " +
-                "원래 터치가 취소될 수 있으며 민감한 작업에는 사용하지 마세요.")
-        card("사용자 동의 안내",
-            "접근성 서비스는 사용자가 선택한 두 앱의 패키지명·창 위치·터치 이벤트를 확인합니다. " +
-                "원래 터치가 취소될 수 있으니 민감한 화면에서는 사용하지 않고 볼륨 아래 키로 중지하세요.",
-            top = 16)
-        val accepted = CheckBox(this).apply {
-            text = "접근성 서비스가 터치를 수신하고 가상 터치를 실행하는 목적·위험을 이해했으며 동의합니다."
-            textSize = 14f
-            setTextColor(palette.text)
-            isChecked = settings.accessibilityDisclosureAccepted
-            minHeight = UiKit.dp(this@MainActivity, 52)
-        }
-        UiKit.add(root, accepted, topDp = 20)
-        val consentHint = UiKit.text(this, palette, "", 13f, secondary = true).apply {
-            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
-        }
-        UiKit.add(root, consentHint, topDp = 8)
-        fun updateConsentHint(checked: Boolean) {
-            consentHint.text = if (checked) {
-                "시스템 접근성 설정의 설치된 앱에서 DualTouch를 직접 켜세요."
-            } else {
-                "시스템 설정을 열려면 먼저 위 동의 항목을 체크해 주세요."
-            }
-        }
-        updateConsentHint(accepted.isChecked)
-        accepted.setOnCheckedChangeListener { _, checked -> updateConsentHint(checked) }
-        addAction("동의하고 Android 접근성 설정 열기", top = 12) {
-            if (!accepted.isChecked) {
-                consentHint.text = "위 동의 항목을 체크한 뒤 다시 눌러 주세요."
-                return@addAction
-            }
-            settings.accessibilityDisclosureAccepted = true
+    private fun requestAccessibilitySettings() {
+        if (settings.accessibilityDisclosureAccepted) {
             openAccessibilitySettings()
+        } else {
+            showAccessibilityConsent()
         }
-        addAction("권한 없이 돌아가기", false) { go(Page.HOME) }
+    }
+
+    private fun showAccessibilityConsent() {
+        val dark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        val theme = if (dark) android.R.style.Theme_Material_Dialog_Alert
+            else android.R.style.Theme_Material_Light_Dialog_Alert
+        val dialog = AlertDialog.Builder(this, theme)
+            .setTitle("접근성 권한")
+            .setMessage(
+                "DualTouch는 연결한 두 앱에 터치를 전달하고 플로팅 Thumb를 표시하기 위해 접근성 서비스를 사용합니다. " +
+                    "선택한 앱의 패키지명, 창 식별자·위치·포커스, 터치 좌표·시간, 비밀번호 칸과 편집 영역 등 화면 구조를 기기에서 일시 확인합니다. " +
+                    "이 정보는 저장하거나 외부로 보내지 않습니다.\n\n" +
+                    "자동 입력은 사용자가 두 앱을 승인하고 실행을 누른 동안에만 작동합니다. " +
+                    "원래 터치가 취소될 수 있고 모든 민감 화면을 판별할 수 없으니 결제나 송금에는 사용하지 마세요. " +
+                    "볼륨 아래 키로 중지할 수 있습니다.\n\n" +
+                    "동의하면 Android 접근성 설정이 열립니다. 설치된 앱에서 DualTouch를 직접 켜세요."
+            )
+            .setNegativeButton("나중에", null)
+            .setPositiveButton("동의하고 설정 열기") { _, _ ->
+                settings.accessibilityDisclosureAccepted = true
+                openAccessibilitySettings()
+            }
+            .show()
+        dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setTextColor(palette.text)
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setTextColor(palette.text)
     }
 
     private fun openAccessibilitySettings() {
@@ -367,8 +350,7 @@ class MainActivity : Activity() {
         addAction("선택 실험 시작", top = 20) {
             val service = TouchMirrorService.current
             when {
-                !settings.accessibilityDisclosureAccepted -> go(Page.PERMISSION)
-                service == null -> go(Page.PERMISSION)
+                !settings.accessibilityDisclosureAccepted || service == null -> requestAccessibilitySettings()
                 service.startExperiment(chosenMode) -> go(Page.HOME)
                 else -> go(Page.HELP)
             }
@@ -423,7 +405,7 @@ class MainActivity : Activity() {
             TouchMirrorService.current?.hideFloatingControl()
             go(Page.HOME)
         }
-        addAction("Android 접근성 설정 열기", false) { openAccessibilitySettings() }
+        addAction("Android 접근성 설정 열기", false) { requestAccessibilitySettings() }
     }
 
     @Suppress("DEPRECATION")
