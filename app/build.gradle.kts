@@ -18,8 +18,8 @@ android {
         applicationId = "com.hebi.dualtouch"
         minSdk = 34
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.0.2-poc"
+        versionCode = 3
+        versionName = "0.0.3-poc"
     }
 
     compileOptions {
