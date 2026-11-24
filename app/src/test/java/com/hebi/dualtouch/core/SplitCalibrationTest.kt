@@ -13,20 +13,27 @@ class SplitCalibrationTest {
     private val upper = WindowSnapshot("one", ScreenRect(0, 30, 900, 470), 0, 10)
     private val lower = WindowSnapshot("two", ScreenRect(0, 490, 900, 930), 0, 11)
 
+    private val horizontalArea = SplitWorkArea(
+        ScreenRect(0, 0, 925, 1040), ScreenRect(0, 35, 925, 1000), 26,
+    )
+    private val verticalArea = SplitWorkArea(
+        ScreenRect(0, 0, 900, 970), ScreenRect(0, 30, 900, 930), 26,
+    )
+
     @Test fun horizontalAndVerticalSplitDetected() {
-        val horizontal = SplitGeometry.detect(right, left)
+        val horizontal = SplitGeometry.detect(right, left, workArea = horizontalArea)
         assertNotNull(horizontal)
         assertEquals(SplitOrientation.HORIZONTAL, horizontal!!.orientation)
         assertEquals(left.packageName, horizontal.left.packageName)
 
-        val vertical = SplitGeometry.detect(lower, upper)
+        val vertical = SplitGeometry.detect(lower, upper, workArea = verticalArea)
         assertNotNull(vertical)
         assertEquals(SplitOrientation.VERTICAL, vertical!!.orientation)
         assertEquals(upper.packageName, vertical.left.packageName)
     }
 
     @Test fun verticalSplitReverseDirectionUsesBottomAsSource() {
-        val pair = SplitGeometry.detect(upper, lower)!!
+        val pair = SplitGeometry.detect(upper, lower, workArea = verticalArea)!!
         assertEquals(lower.bounds, pair.source(TouchSide.RIGHT).bounds)
         assertEquals(upper.bounds, pair.target(TouchSide.RIGHT).bounds)
         val mapped = CoordinateMapper.map(lower.bounds, upper.bounds, 450f, 710f, 24f)
@@ -37,8 +44,8 @@ class SplitCalibrationTest {
 
     @Test fun wrongOverlapAndDistinctDisplaysRejected() {
         assertNull(SplitGeometry.detect(left, WindowSnapshot(
-            "two", ScreenRect(200, 800, 650, 1200), 0, 11)))
-        assertNull(SplitGeometry.detect(upper, lower.copy(displayId=2)))
+            "two", ScreenRect(200, 800, 650, 1200), 0, 11), workArea = horizontalArea))
+        assertNull(SplitGeometry.detect(upper, lower.copy(displayId = 2), workArea = verticalArea))
     }
 
     @Test fun defaultGuideAxisMatchesSplit() {
@@ -80,5 +87,26 @@ class SplitCalibrationTest {
         assertNotNull(changedOffset)
         assertEquals(red, points.first)
         assertEquals(offset.dx + .02f, changedOffset!!.dx, .0001f)
+    }
+
+    @Test fun calibrationIsScopedToTheConnectedWindowsAndDirection() {
+        val pair = WindowPair(upper, lower, SplitOrientation.VERTICAL)
+        val anotherPair = pair.copy(right = lower.copy(windowId = 67))
+        val offset = CalibrationOffset(0.1f, 0.07f)
+        val calibration = PairCalibration()
+        calibration.setPair(pair)
+        assertTrue(calibration.save(pair, TouchSide.LEFT, offset))
+        assertEquals(offset, calibration.offsetFor(pair, TouchSide.LEFT))
+        assertEquals(CalibrationOffset.ZERO, calibration.offsetFor(pair, TouchSide.RIGHT))
+        assertFalse(calibration.reset(anotherPair, TouchSide.LEFT))
+        assertEquals(offset, calibration.offsetFor(pair, TouchSide.LEFT))
+
+        calibration.setPair(null)
+        assertFalse(calibration.save(pair, TouchSide.LEFT, offset))
+        calibration.setPair(anotherPair)
+        assertEquals(CalibrationOffset.ZERO, calibration.offsetFor(anotherPair, TouchSide.LEFT))
+        assertFalse(calibration.reset(pair, TouchSide.LEFT))
+        calibration.setPair(pair)
+        assertEquals(CalibrationOffset.ZERO, calibration.offsetFor(pair, TouchSide.LEFT))
     }
 }

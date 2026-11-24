@@ -250,7 +250,7 @@ class MainActivity : Activity() {
         card("02 · 좌/우 앱 연결",
             "Thumb → 좌/우 선택 · 앱 연결 → 표시된 앱을 확인하고 직접 누를 방향을 승인합니다.")
         card("03 · 실행·영점",
-            "연결 후 Thumb의 실행을 누릅니다. 필요하면 영점을 조절하고 볼륨 아래로 긴급 중지합니다.")
+            "연결 후 Thumb의 실행을 누릅니다. 영점은 현재 연결된 창과 입력 방향에만 적용됩니다. 볼륨 아래로 긴급 중지할 수 있습니다.")
         addAction("분할 화면 안내", false) { go(Page.GUIDE) }
         addAction("접근성 권한 안내", false) { showAccessibilityConsent() }
         addAction("개인정보처리방침", false) {
@@ -263,7 +263,7 @@ class MainActivity : Activity() {
 
         section("기술 검증")
         card("Android 입력 처리 제한",
-            "실제 앱의 원본 터치가 취소될 수 있습니다. 명시적으로 연결한 앱 두 개만 제어하며 " +
+            "실행 중에는 연결된 두 앱에서 짧은 탭만 처리합니다. 연속 탭이 누락될 수 있으며, 스크롤·길게 누르기·멀티터치는 입력을 중지합니다. " +
                 "감지한 키보드·비밀번호·보호 앱에서는 입력을 차단합니다. " +
                 "모든 민감 화면을 판별할 수 없으므로 결제·송금·삭제 등에는 사용하지 마세요.")
         addAction("오류·중지 안내", false) { go(Page.HELP) }

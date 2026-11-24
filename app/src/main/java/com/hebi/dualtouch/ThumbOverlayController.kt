@@ -41,16 +41,16 @@ import kotlin.math.max
  */
 internal class ThumbOverlayController(
     private val context: Context,
-    private val pairProvider: () -> WindowPair?,
+    private val pairProvider: () -> SafetyAssessment,
     private val sideProvider: () -> TouchSide,
     private val runningProvider: () -> Boolean,
-    private val calibrationProvider: () -> CalibrationOffset,
+    private val calibrationProvider: (WindowPair, TouchSide) -> CalibrationOffset,
     private val onRunToggle: () -> SafetyIssue,
     private val candidateProvider: () -> SafetyAssessment,
     private val onConnectApps: (TouchSide, AppPairApproval) -> SafetyIssue,
     private val onCalibrationStart: () -> Unit,
-    private val onCalibrationSaved: (CalibrationOffset) -> Unit,
-    private val onCalibrationReset: () -> Unit,
+    private val onCalibrationSaved: (WindowPair, TouchSide, CalibrationOffset) -> Boolean,
+    private val onCalibrationReset: (WindowPair, TouchSide) -> Boolean,
     private val onMenuVisibilityChanged: (Boolean) -> Unit,
 ) {
     private data class Marker(
@@ -164,7 +164,7 @@ internal class ThumbOverlayController(
         val control = thumb ?: return false
         val position = IntArray(2)
         control.view.getLocationOnScreen(position)
-        return x >= position[0] && x < position[0] + control.view.width &&
+        return control.view.visibility == View.VISIBLE && x >= position[0] && x < position[0] + control.view.width &&
             y >= position[1] && y < position[1] + control.view.height
     }
 
@@ -173,9 +173,8 @@ internal class ThumbOverlayController(
         if (!calibrating) openMenu()
     }
 
-    fun updateSourceSide() {
+    fun updateSourceSide(pair: WindowPair?) {
         val marker = thumb ?: return
-        val pair = pairProvider()
         val source = pair?.source(sideProvider())?.bounds
         val bounds = safeWindowBounds()
         val x = source?.left?.plus(dp(12)) ?: if (sideProvider() == TouchSide.LEFT) {
@@ -190,12 +189,8 @@ internal class ThumbOverlayController(
         )
     }
 
-    fun hideForDispatch() {
-        thumb?.view?.visibility = View.INVISIBLE
-    }
-
-    fun restoreAfterDispatch() {
-        if (!calibrating) thumb?.view?.visibility = View.VISIBLE
+    fun cancelCalibration() {
+        if (calibrating) endCalibration()
     }
 
     fun hide() {
@@ -268,7 +263,7 @@ internal class ThumbOverlayController(
                 val secondLabel = if (pair.orientation == SplitOrientation.HORIZONTAL) "오른쪽" else "아래쪽"
                 text = "$firstLabel: ${pair.left.packageName}\n" +
                     "$secondLabel: ${pair.right.packageName}\n" +
-                    "선택한 두 창에서만 1회 입력을 복제합니다."
+                    "실행 중에는 한 손가락으로 짧게 누르는 탭만 처리합니다."
                 textSize = 13f
                 setTextColor(Color.DKGRAY)
                 setPadding(dp(10), dp(6), dp(10), dp(8))
@@ -301,7 +296,7 @@ internal class ThumbOverlayController(
     private fun confirmPair(side: TouchSide, approval: AppPairApproval) {
         val issue = onConnectApps(side, approval)
         if (issue == SafetyIssue.NONE) {
-            updateSourceSide()
+            updateSourceSide(pairProvider().pair)
             closeMenu()
         } else {
             openPairSelection(issue)
@@ -309,15 +304,21 @@ internal class ThumbOverlayController(
     }
 
     private fun beginCalibration() {
-        val pair = pairProvider() ?: run { closeMenu(); return }
+        val assessment = pairProvider()
+        val pair = assessment.pair
+        if (!assessment.allowed || pair == null) {
+            openPairSelection(assessment.issue)
+            return
+        }
+        val side = sideProvider()
         onCalibrationStart()
         closeMenu()
         calibrating = true
         thumb?.view?.visibility = View.INVISIBLE
 
-        val source = pair.source(sideProvider()).bounds
-        val target = pair.target(sideProvider()).bounds
-        draftOffset = calibrationProvider()
+        val source = pair.source(side).bounds
+        val target = pair.target(side).bounds
+        draftOffset = calibrationProvider(pair, side)
         val defaultAxis = CalibrationGuide.defaultAxis(pair.orientation)
         guideAxis = runCatching {
             GuideAxis.valueOf(
@@ -330,10 +331,13 @@ internal class ThumbOverlayController(
             CalibrationGuide.DEFAULT_PERCENT,
         ))
         val startRed = CalibrationGuide.reference(source, guideAxis, guidePercent)
-        val startWhite = startRed?.let {
-            CoordinateMapper.map(source, target, it.x, it.y, safeInsetPx(), draftOffset)
+        if (startRed == null) {
+            endCalibration()
+            return
         }
-        if (startWhite == null || startRed == null || !showGuides(pair)) {
+        val startWhite = CoordinateMapper.map(source, target, startRed.x, startRed.y,
+            safeInsetPx(), draftOffset)
+        if (startWhite == null || !showGuides(pair)) {
             endCalibration()
             return
         }
@@ -350,8 +354,8 @@ internal class ThumbOverlayController(
 
         red?.let { marker ->
             configureDrag(marker.view, marker.layout, onMove = { x, y ->
-                val current = pairProvider()
-                if (current == null || current != pair) {
+                val current = pairProvider().pair
+                if (current != pair || side != sideProvider()) {
                     endCalibration()
                     return@configureDrag
                 }
@@ -359,8 +363,8 @@ internal class ThumbOverlayController(
                     x + marker.view.width / 2f,
                     y + marker.view.height / 2f)
                 val proposed = ThumbReferenceMotion.moveSourceTogether(
-                    current.source(sideProvider()).bounds,
-                    current.target(sideProvider()).bounds,
+                    current.source(side).bounds,
+                    current.target(side).bounds,
                     requestedRed, draftOffset, safeInsetPx()) ?: return@configureDrag
                 moveCenter(marker, proposed.first)
                 white?.let { moveCenter(it, proposed.second) }
@@ -368,8 +372,8 @@ internal class ThumbOverlayController(
         }
         white?.let { marker ->
             configureDrag(marker.view, marker.layout, onMove = { x, y ->
-                val current = pairProvider()
-                if (current == null || current != pair) {
+                val current = pairProvider().pair
+                if (current != pair || side != sideProvider()) {
                     endCalibration()
                     return@configureDrag
                 }
@@ -378,8 +382,8 @@ internal class ThumbOverlayController(
                     x + marker.view.width / 2f,
                     y + marker.view.height / 2f)
                 val offset = ThumbReferenceMotion.moveAutomaticOnly(
-                    current.source(sideProvider()).bounds,
-                    current.target(sideProvider()).bounds,
+                    current.source(side).bounds,
+                    current.target(side).bounds,
                     redPoint, requestedWhite, safeInsetPx()) ?: return@configureDrag
                 draftOffset = offset
                 moveCenter(marker, requestedWhite)
@@ -471,39 +475,41 @@ internal class ThumbOverlayController(
             }
         }
         addButton(column, "영점 저장") {
-            val current = pairProvider()
+            val current = pairProvider().pair
             val redPoint = red?.let(::center)
             val whitePoint = white?.let(::center)
-            val corrected = if (current != null && current == pair &&
-                redPoint != null && whitePoint != null
-            ) {
+            if (current != pair || side != sideProvider()) {
+                endCalibration()
+                return@addButton
+            }
+            val corrected = if (redPoint != null && whitePoint != null) {
                 ThumbReferenceMotion.moveAutomaticOnly(
-                    current.source(sideProvider()).bounds,
-                    current.target(sideProvider()).bounds,
+                    current.source(side).bounds,
+                    current.target(side).bounds,
                     redPoint, whitePoint, safeInsetPx())
             } else null
             if (corrected == null) {
-                column.addView(TextView(context).apply {
-                    text = "조절 범위 또는 창 위치가 유효하지 않습니다."
-                    setTextColor(Color.RED)
-                    textSize = 12f
-                })
+                guideNotice.text = "터치점을 앱의 안전 입력 영역 안에 놓아 주세요."
             } else {
+                if (!onCalibrationSaved(pair, side, corrected)) {
+                    endCalibration()
+                    return@addButton
+                }
                 guidePrefs.edit()
                     .putString("axis_${pair.orientation.name}", guideAxis.name)
                     .putInt("position_${pair.orientation.name}_${guideAxis.name}", guidePercent)
                     .apply()
-                onCalibrationSaved(corrected)
                 endCalibration()
             }
         }
         addButton(column, "영점 초기화") {
-            onCalibrationReset()
-            guidePrefs.edit()
-                .remove("axis_${pair.orientation.name}")
-                .remove("position_${pair.orientation.name}_VERTICAL")
-                .remove("position_${pair.orientation.name}_HORIZONTAL")
-                .apply()
+            if (onCalibrationReset(pair, side)) {
+                guidePrefs.edit()
+                    .remove("axis_${pair.orientation.name}")
+                    .remove("position_${pair.orientation.name}_VERTICAL")
+                    .remove("position_${pair.orientation.name}_HORIZONTAL")
+                    .apply()
+            }
             endCalibration()
         }
         addButton(column, "취소") { endCalibration() }
@@ -521,8 +527,11 @@ internal class ThumbOverlayController(
         nextAxis: GuideAxis,
         nextPercent: Int,
     ): Boolean {
-        val current = pairProvider() ?: return false
-        if (current != original) return false
+        val current = pairProvider().pair
+        if (current != original) {
+            endCalibration()
+            return false
+        }
         val source = current.source(sideProvider()).bounds
         val target = current.target(sideProvider()).bounds
         val requestedRed = CalibrationGuide.reference(source, nextAxis, nextPercent)

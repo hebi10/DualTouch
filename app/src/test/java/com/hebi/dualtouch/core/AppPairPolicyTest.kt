@@ -9,6 +9,15 @@ class AppPairPolicyTest {
     private val left = ScreenRect(0, 48, 500, 1100)
     private val right = ScreenRect(520, 48, 1020, 1100)
     private val owner = "com.hebi.dualtouch"
+    private val workArea = SplitWorkArea(
+        ScreenRect(0, 0, 1020, 1140), ScreenRect(0, 48, 1020, 1100), 24,
+    )
+
+    private fun select(windows: List<ObservedWindow>) =
+        AppPairPolicy.select(windows, owner, workArea)
+
+    private fun verify(windows: List<ObservedWindow>, approval: AppPairApproval?) =
+        AppPairPolicy.verify(windows, owner, workArea, approval)
 
     private fun window(pkg: String, id: Int, bounds: ScreenRect, focused: Boolean) =
         ObservedWindow(WindowLayer.APPLICATION, pkg, bounds,
@@ -20,7 +29,7 @@ class AppPairPolicyTest {
     )
 
     @Test fun selectsActualThirdPartyAppPair() {
-        val result = AppPairPolicy.select(pair(), owner)
+        val result = select(pair())
         assertTrue(result.allowed)
         assertEquals("com.example.notes", result.pair!!.left.packageName)
         assertEquals("com.example.browser", result.pair.right.packageName)
@@ -31,132 +40,163 @@ class AppPairPolicyTest {
             window("com.example.notes", 17, left, true),
             window("com.example.notes", 29, right, false)
         )
-        assertTrue(AppPairPolicy.select(windows, owner).allowed)
-        assertFalse(AppPairPolicy.select(windows.map {
+        assertTrue(select(windows).allowed)
+        assertFalse(select(windows.map {
             it.copy(windowId = 17)
-        }, owner).allowed)
+        }).allowed)
     }
 
     @Test fun requiresExplicitSessionApproval() {
         val candidates = pair()
         assertEquals(SafetyIssue.UNAPPROVED_PAIR,
-            AppPairPolicy.verify(candidates, owner, null).issue)
+            verify(candidates, null).issue)
         val approved = AppPairApproval.fromPair(
-            AppPairPolicy.select(candidates, owner).pair!!)
-        assertTrue(AppPairPolicy.verify(candidates, owner, approved).allowed)
+            select(candidates).pair!!)
+        assertTrue(verify(candidates, approved).allowed)
         assertEquals(SafetyIssue.PAIR_CHANGED,
-            AppPairPolicy.verify(candidates.map {
+            verify(candidates.map {
                 if (it.windowId == 29) it.copy(windowId = 31) else it
-            }, owner, approved).issue)
+            }, approved).issue)
     }
 
     @Test fun rejectsProtectedSystemAndFinanceApps() {
         assertEquals(SafetyIssue.PROTECTED_APP,
-            AppPairPolicy.select(
-                listOf(pair()[0], window("com.android.settings", 29, right, false)),
-                owner).issue)
+            select(
+                listOf(pair()[0], window("com.android.settings", 29, right, false))
+            ).issue)
         assertEquals(SafetyIssue.PROTECTED_APP,
-            AppPairPolicy.select(
-                listOf(pair()[0], window("com.example.bank", 29, right, false)),
-                owner).issue)
+            select(
+                listOf(pair()[0], window("com.example.bank", 29, right, false))
+            ).issue)
         assertTrue(AppPairPolicy.isProtectedPackage(owner, owner))
     }
 
     @Test fun revokesApprovalWhenBoundsChangeWithoutChangingWindowId() {
         val candidates = pair()
-        val approval = AppPairApproval.fromPair(AppPairPolicy.select(candidates, owner).pair!!)
+        val approval = AppPairApproval.fromPair(select(candidates).pair!!)
         val moved = candidates.map {
             it.copy(bounds = it.bounds.copy(top = 60, bottom = 1080))
         }
         assertEquals(SafetyIssue.PAIR_CHANGED,
-            AppPairPolicy.verify(moved, owner, approval).issue)
+            verify(moved, approval).issue)
     }
 
     @Test fun rejectsTwoWindowsOnTheSameSecondaryDisplay() {
         assertEquals(SafetyIssue.UNSUPPORTED_DISPLAY,
-            AppPairPolicy.select(pair().map { it.copy(displayId = 2) }, owner).issue)
+            select(pair().map { it.copy(displayId = 2) }).issue)
     }
 
     @Test fun rejectsPasswordOrEditableUi() {
         val sensitive = pair().map {
-            if (it.windowId == 29) it.copy(sensitiveInput = true) else it
+            if (it.windowId == 29) it.copy(inputInspection = InputInspection.SENSITIVE) else it
         }
         assertEquals(SafetyIssue.SENSITIVE_INPUT,
-            AppPairPolicy.select(sensitive, owner).issue)
+            select(sensitive).issue)
     }
 
     @Test fun blocksKeyboardAndUnrecognizedOverlays() {
         assertEquals(SafetyIssue.KEYBOARD,
-            AppPairPolicy.select(pair() + ObservedWindow(
+            select(pair() + ObservedWindow(
                 WindowLayer.INPUT_METHOD, "com.keyboard",
-                ScreenRect(0, 700, 1020, 1100)), owner).issue)
+                ScreenRect(0, 700, 1020, 1100))).issue)
         assertEquals(SafetyIssue.ACCESSIBILITY_OVERLAY,
-            AppPairPolicy.select(pair() + ObservedWindow(
+            select(pair() + ObservedWindow(
                 WindowLayer.ACCESSIBILITY, "com.other.access",
-                ScreenRect(100, 100, 200, 200)), owner).issue)
+                ScreenRect(100, 100, 200, 200))).issue)
     }
 
     @Test fun rejectsUnexpectedThirdWindowOrDifferentDisplays() {
         assertEquals(SafetyIssue.EXTRA_APPLICATION_WINDOWS,
-            AppPairPolicy.select(pair() + window("com.example.chat", 30,
-                ScreenRect(0, 0, 100, 100), false), owner).issue)
+            select(pair() + window("com.example.chat", 30,
+                ScreenRect(0, 0, 100, 100), false)).issue)
         assertEquals(SafetyIssue.DIFFERENT_DISPLAY,
-            AppPairPolicy.select(pair().map {
+            select(pair().map {
                 if (it.windowId == 29) it.copy(displayId = 1) else it
-            }, owner).issue)
+            }).issue)
     }
 
     @Test fun rejectsInvalidOverlapAndNoFocus() {
         val noFocus = pair().map { it.copy(focused = false) }
         assertEquals(SafetyIssue.NO_FOCUSED_TARGET,
-            AppPairPolicy.select(noFocus, owner).issue)
+            select(noFocus).issue)
         val overlap = pair().map {
             if (it.windowId == 29) it.copy(bounds = ScreenRect(300, 48, 800, 1100))
             else it
         }
-        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT,
-            AppPairPolicy.select(overlap + ObservedWindow(WindowLayer.SPLIT_DIVIDER, "android",
-                ScreenRect(495, 400, 510, 600)), owner).issue)
+        assertEquals(SafetyIssue.SPLIT_DIVIDER_MISMATCH,
+            select(overlap + ObservedWindow(WindowLayer.SPLIT_DIVIDER, "android",
+                ScreenRect(495, 400, 510, 600))).issue)
     }
 
-    @Test fun onlyTrustsMatchingSystemDividerForUnevenSplit() {
+    @Test fun rejectsInvalidOrAmbiguousReportedDivider() {
         val smaller = window("com.example.notes", 17, ScreenRect(0, 48, 320, 1100), true)
         val larger = window("com.example.browser", 29, ScreenRect(340, 48, 1020, 1100), false)
         val divider = ObservedWindow(WindowLayer.SPLIT_DIVIDER, "android",
             ScreenRect(320, 400, 340, 600))
         val windows = listOf(smaller, larger)
-        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT, AppPairPolicy.select(windows, owner).issue)
-        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT,
-            AppPairPolicy.select(windows + divider.copy(displayId = 1), owner).issue)
-        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT, AppPairPolicy.select(
-            windows + divider.copy(bounds = ScreenRect(700, 400, 720, 600)), owner).issue)
-        assertTrue(AppPairPolicy.select(windows + divider, owner).allowed)
+        assertTrue(select(windows).allowed)
+        assertTrue(select(windows + divider.copy(displayId = 1)).allowed)
+        assertEquals(SafetyIssue.SPLIT_DIVIDER_MISMATCH, select(windows + divider + divider).issue)
+        assertEquals(SafetyIssue.SPLIT_DIVIDER_MISMATCH, select(
+            windows + divider.copy(bounds = ScreenRect(700, 400, 720, 600))).issue)
+        assertTrue(select(windows + divider).allowed)
 
         val upper = smaller.copy(bounds = ScreenRect(0, 48, 1020, 380))
         val lower = larger.copy(bounds = ScreenRect(0, 400, 1020, 1100))
-        assertEquals(SplitOrientation.VERTICAL, AppPairPolicy.select(
-            listOf(lower, upper, divider.copy(bounds = ScreenRect(400, 380, 620, 400))),
-            owner).pair?.orientation)
+        assertEquals(SplitOrientation.VERTICAL, select(
+            listOf(lower, upper, divider.copy(bounds = ScreenRect(400, 380, 620, 400)))
+        ).pair?.orientation)
     }
 
     @Test fun neverAllowsWindowControlsToOverlapEitherTarget() {
         val control = ObservedWindow(WindowLayer.WINDOW_CONTROL, null,
             ScreenRect(100, 0, 200, 48))
-        assertTrue(AppPairPolicy.select(pair() + control, owner).allowed)
-        assertEquals(SafetyIssue.BLOCKING_WINDOW_CONTROL, AppPairPolicy.select(
-            pair() + control.copy(bounds = ScreenRect(100, 0, 200, 80)), owner).issue)
-        assertEquals(SafetyIssue.UNKNOWN_WINDOW, AppPairPolicy.select(
-            pair() + control.copy(layer = WindowLayer.OTHER), owner).issue)
+        assertTrue(select(pair() + control).allowed)
+        assertEquals(SafetyIssue.BLOCKING_WINDOW_CONTROL, select(
+            pair() + control.copy(bounds = ScreenRect(100, 0, 200, 80))).issue)
+        assertEquals(SafetyIssue.UNKNOWN_WINDOW, select(
+            pair() + control.copy(layer = WindowLayer.OTHER)).issue)
     }
 
     @Test fun treatsOwnOverlayAsAllowedButUnknownSystemDialogAsUnsafe() {
-        assertTrue(AppPairPolicy.select(pair() + ObservedWindow(
+        assertTrue(select(pair() + ObservedWindow(
             WindowLayer.ACCESSIBILITY, owner, ScreenRect(20, 80, 80, 140)
-        ), owner).allowed)
+        )).allowed)
         assertEquals(SafetyIssue.COVERED_BY_SYSTEM,
-            AppPairPolicy.select(pair() + ObservedWindow(
+            select(pair() + ObservedWindow(
                 WindowLayer.SYSTEM, "android", ScreenRect(50, 200, 990, 780)
-            ), owner).issue)
+            )).issue)
+    }
+
+    @Test fun rejectsSmallAlignedPopupsAndLargeGapsWithoutDivider() {
+        val small = listOf(
+            window("com.example.notes", 17, ScreenRect(20, 100, 260, 450), true),
+            window("com.example.browser", 29, ScreenRect(270, 100, 510, 450), false),
+        )
+        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT, select(small).issue)
+        val farApart = pair().toMutableList()
+        farApart[0] = farApart[0].copy(bounds = left.copy(right = 350))
+        assertEquals(SafetyIssue.NOT_SPLIT_LAYOUT, select(farApart).issue)
+    }
+
+    @Test fun blocksPictureInPictureAndDistinguishesUnavailableAndOversizedTrees() {
+        val (first, second) = pair()
+        assertEquals(SafetyIssue.PICTURE_IN_PICTURE,
+            select(listOf(first, second.copy(pictureInPicture = true))).issue)
+        assertEquals(SafetyIssue.INPUT_INSPECTION_INCOMPLETE,
+            select(listOf(first, second.copy(packageName = null))).issue)
+        assertEquals(SafetyIssue.INPUT_INSPECTION_LIMIT,
+            select(listOf(first, second.copy(inputInspection = InputInspection.LIMIT_REACHED))).issue)
+    }
+
+    @Test fun detectsUnevenSplitFillingTheWorkAreaWithSystemInsets() {
+        val workArea = SplitWorkArea(
+            ScreenRect(0, 0, 1600, 1020), ScreenRect(0, 0, 1600, 950), 32,
+        )
+        val windows = listOf(
+            window("com.example.notes", 17, ScreenRect(0, 0, 1050, 1020), true),
+            window("com.example.browser", 29, ScreenRect(1070, 0, 1600, 950), false),
+        )
+        assertTrue(AppPairPolicy.select(windows, owner, workArea).allowed)
     }
 }
-

@@ -9,6 +9,13 @@ class TouchGeometryTest {
     private val left = ScreenRect(0, 40, 500, 1160)
     private val right = ScreenRect(520, 40, 1020, 1160)
 
+    private val workArea = SplitWorkArea(
+        ScreenRect(0, 0, 1020, 1200), ScreenRect(0, 40, 1020, 1160), 24,
+    )
+
+    private fun resolve(windows: List<WindowSnapshot>) =
+        WindowPairResolver.resolve(windows, null, workArea)
+
     @Test fun mapsCenterToOtherWindow() {
         val result = CoordinateMapper.map(left, right, 250f, 600f, 24f)
         assertNotNull(result)
@@ -44,7 +51,7 @@ class TouchGeometryTest {
     }
 
     @Test fun detectsValidWindowPair() {
-        val pair = WindowPairResolver.resolve(
+        val pair = resolve(
             listOf(
                 WindowSnapshot(TestPackages.RIGHT, right),
                 WindowSnapshot(TestPackages.LEFT, left),
@@ -59,19 +66,19 @@ class TouchGeometryTest {
     @Test fun rejectsMissingOrDuplicateProbe() {
         val l = WindowSnapshot(TestPackages.LEFT, left)
         val r = WindowSnapshot(TestPackages.RIGHT, right)
-        assertNull(WindowPairResolver.resolve(listOf(l)))
-        assertNull(WindowPairResolver.resolve(listOf(l, l, r)))
+        assertNull(resolve(listOf(l)))
+        assertNull(resolve(listOf(l, l, r)))
     }
 
     @Test fun rejectsOverlappingAndPoorlyAlignedWindows() {
         val l = WindowSnapshot(TestPackages.LEFT, left)
         assertNull(
-            WindowPairResolver.resolve(
+            resolve(
                 listOf(l, WindowSnapshot(TestPackages.RIGHT, ScreenRect(400, 40, 900, 1160)))
             )
         )
         assertNull(
-            WindowPairResolver.resolve(
+            resolve(
                 listOf(l, WindowSnapshot(TestPackages.RIGHT, ScreenRect(520, 850, 1020, 1800)))
             )
         )

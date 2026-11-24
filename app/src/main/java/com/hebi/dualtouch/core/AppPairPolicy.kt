@@ -70,18 +70,19 @@ object AppPairPolicy {
     fun select(
         windows: List<ObservedWindow>,
         controllerPackage: String,
+        workArea: SplitWorkArea,
     ): SafetyAssessment {
         val apps = windows.filter { it.layer == WindowLayer.APPLICATION }
+        if (apps.any { it.pictureInPicture }) return SafetyAssessment(null, SafetyIssue.PICTURE_IN_PICTURE)
         if (apps.size > 2) return SafetyAssessment(null, SafetyIssue.EXTRA_APPLICATION_WINDOWS)
-        if (apps.size != 2 || apps.any { it.packageName.isNullOrBlank() }) {
-            return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
+        if (apps.size != 2) return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
+        if (apps.any { it.packageName.isNullOrBlank() }) {
+            return SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_INCOMPLETE)
         }
         if (apps.any { isProtectedPackage(it.packageName!!, controllerPackage) }) {
             return SafetyAssessment(null, SafetyIssue.PROTECTED_APP)
         }
-        if (apps.any { it.sensitiveInput }) {
-            return SafetyAssessment(null, SafetyIssue.SENSITIVE_INPUT)
-        }
+        WindowSafetyPolicy.inputIssue(apps)?.let { return SafetyAssessment(null, it) }
         if (apps.any { it.windowId < 0 } || apps[0].windowId == apps[1].windowId) {
             return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
         }
@@ -93,14 +94,18 @@ object AppPairPolicy {
         }
         val first = apps[0]
         val second = apps[1]
-        val divider = windows.singleOrNull {
-            it.layer == WindowLayer.SPLIT_DIVIDER && it.displayId == first.displayId
-        }?.bounds
+        val dividers = windows.filter { it.layer == WindowLayer.SPLIT_DIVIDER && it.displayId == first.displayId }
+        if (dividers.size > 1) return SafetyAssessment(null, SafetyIssue.SPLIT_DIVIDER_MISMATCH)
         val pair = SplitGeometry.detect(
             WindowSnapshot(first.packageName!!, first.bounds, first.displayId, first.windowId),
             WindowSnapshot(second.packageName!!, second.bounds, second.displayId, second.windowId),
-            divider,
-        ) ?: return SafetyAssessment(null, SafetyIssue.NOT_SPLIT_LAYOUT)
+            dividers.singleOrNull()?.bounds,
+            workArea,
+        ) ?: return SafetyAssessment(null, if (dividers.isEmpty()) {
+            SafetyIssue.NOT_SPLIT_LAYOUT
+        } else {
+            SafetyIssue.SPLIT_DIVIDER_MISMATCH
+        })
 
         if (apps.none { it.focused }) {
             return SafetyAssessment(null, SafetyIssue.NO_FOCUSED_TARGET)
@@ -135,12 +140,13 @@ object AppPairPolicy {
     fun verify(
         windows: List<ObservedWindow>,
         controllerPackage: String,
+        workArea: SplitWorkArea,
         approval: AppPairApproval?,
     ): SafetyAssessment {
         if (approval == null) {
             return SafetyAssessment(null, SafetyIssue.UNAPPROVED_PAIR)
         }
-        val assessment = select(windows, controllerPackage)
+        val assessment = select(windows, controllerPackage, workArea)
         return if (!assessment.allowed || assessment.pair == null) {
             assessment
         } else if (!approval.matches(assessment.pair)) {
@@ -161,3 +167,29 @@ object AppPairPolicy {
     }
 }
 
+
+internal class PairCalibration {
+    private var pair: WindowPair? = null
+    private val offsets = mutableMapOf<TouchSide, CalibrationOffset>()
+
+    fun setPair(current: WindowPair?) {
+        if (pair == current) return
+        pair = current
+        offsets.clear()
+    }
+
+    fun offsetFor(current: WindowPair, side: TouchSide): CalibrationOffset =
+        if (current == pair) offsets[side] ?: CalibrationOffset.ZERO else CalibrationOffset.ZERO
+
+    fun save(current: WindowPair, side: TouchSide, offset: CalibrationOffset): Boolean {
+        if (current != pair || !offset.isSafe()) return false
+        offsets[side] = offset
+        return true
+    }
+
+    fun reset(current: WindowPair, side: TouchSide): Boolean {
+        if (current != pair) return false
+        offsets.remove(side)
+        return true
+    }
+}
