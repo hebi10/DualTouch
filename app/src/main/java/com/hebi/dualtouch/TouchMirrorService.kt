@@ -167,8 +167,10 @@ class TouchMirrorService : AccessibilityService() {
         return SafetyIssue.NONE
     }
 
-    private fun toggleThumbRunning(): SafetyIssue {
-        val issue = setThumbRunning(!thumbRunning)
+    private fun requestThumbRunning(enabled: Boolean): SafetyIssue {
+        // A stale menu action must never toggle or extend a running session.
+        if (enabled == thumbRunning) return SafetyIssue.NONE
+        val issue = setThumbRunning(enabled)
         lastThumbIssue = issue.takeUnless { it == SafetyIssue.NONE }
         return issue
     }
@@ -322,7 +324,7 @@ class TouchMirrorService : AccessibilityService() {
             stateProvider = ::thumbUiState,
             calibrationProvider = calibration::offsetFor,
             calibrationSavedProvider = calibration::hasSaved,
-            onRunToggle = ::toggleThumbRunning,
+            onRunRequest = ::requestThumbRunning,
             candidateProvider = ::candidateAppPair,
             onConnectApps = ::connectVisibleApps,
             onCalibrationStart = ::prepareCalibration,

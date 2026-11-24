@@ -53,7 +53,7 @@ internal class ThumbOverlayController(
     private val stateProvider: () -> ThumbUiState,
     private val calibrationProvider: (WindowPair, TouchSide) -> CalibrationOffset,
     private val calibrationSavedProvider: (WindowPair, TouchSide) -> Boolean,
-    private val onRunToggle: () -> SafetyIssue,
+    private val onRunRequest: (Boolean) -> SafetyIssue,
     private val candidateProvider: () -> SafetyAssessment,
     private val onConnectApps: (TouchSide, AppPairApproval) -> SafetyIssue,
     private val onCalibrationStart: () -> Unit,
@@ -76,6 +76,8 @@ internal class ThumbOverlayController(
     private val palette: UiPalette get() = UiPalette(context)
     private val displayHandler = Handler(Looper.getMainLooper())
     private var menuStateLabel: TextView? = null
+    private var menuRunButton: Button? = null
+    private var menuRunStarts = false
     private val displayTick = object : Runnable {
         override fun run() {
             if (thumb == null) return
@@ -140,6 +142,12 @@ internal class ThumbOverlayController(
         }
         menuStateLabel?.let { label ->
             if (label.text.toString() != state.description) label.text = state.description
+        }
+        menuRunButton?.let { button ->
+            val unchanged = menuRunStarts == !runningProvider()
+            val label = if (!unchanged) "상태 변경 · 메뉴 다시 열기" else if (menuRunStarts) "실행" else "중지"
+            if (button.text.toString() != label) button.text = label
+            if (button.isEnabled != unchanged) button.isEnabled = unchanged
         }
     }
 
@@ -229,6 +237,7 @@ internal class ThumbOverlayController(
     fun hide() {
         displayHandler.removeCallbacks(displayTick)
         menuStateLabel = null
+        menuRunButton = null
         clearCalibration()
         closeMenu()
         thumb?.let { safeRemove(it.view) }
@@ -251,13 +260,21 @@ internal class ThumbOverlayController(
             setTextColor(palette.text)
             setPadding(dp(10), dp(8), dp(10), dp(8))
         }.also { column.addView(it) }
-        addButton(column, if (runningProvider()) "중지" else "실행") {
-            when (val issue = onRunToggle()) {
-                SafetyIssue.NONE -> closeMenu()
-                SafetyIssue.UNAPPROVED_PAIR -> openPairSelection()
-                else -> openPairSelection(issue)
+        val requestedStart = !runningProvider()
+        menuRunStarts = requestedStart
+        menuRunButton = UiKit.action(context, palette, if (requestedStart) "실행" else "중지", primary = false).apply {
+            setOnClickListener {
+                if (requestedStart != !runningProvider()) {
+                    closeMenu()
+                } else {
+                    when (val issue = onRunRequest(requestedStart)) {
+                        SafetyIssue.NONE -> closeMenu()
+                        SafetyIssue.UNAPPROVED_PAIR -> openPairSelection()
+                        else -> openPairSelection(issue)
+                    }
+                }
             }
-        }
+        }.also { UiKit.add(column, it, topDp = 4) }
         addButton(column, "좌/우 선택 · 앱 연결") {
             openPairSelection()
         }
@@ -268,6 +285,7 @@ internal class ThumbOverlayController(
         val preferredX = position[0] + (thumb?.view?.width ?: dp(52)) + dp(8)
         if (!showMenu(column, 242, preferredX, position[1])) {
             menuStateLabel = null
+            menuRunButton = null
             onMenuVisibilityChanged(false)
         }
     }
@@ -719,6 +737,7 @@ internal class ThumbOverlayController(
     private fun closeMenu() {
         val target = menu ?: return
         menuStateLabel = null
+        menuRunButton = null
         menu = null
         safeRemove(target)
         onMenuVisibilityChanged(false)
