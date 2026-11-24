@@ -181,6 +181,8 @@ internal class PairCalibration {
     fun offsetFor(current: WindowPair, side: TouchSide): CalibrationOffset =
         if (current == pair) offsets[side] ?: CalibrationOffset.ZERO else CalibrationOffset.ZERO
 
+    fun hasSaved(current: WindowPair, side: TouchSide): Boolean = current == pair && offsets.containsKey(side)
+
     fun save(current: WindowPair, side: TouchSide, offset: CalibrationOffset): Boolean {
         if (current != pair || !offset.isSafe()) return false
         offsets[side] = offset

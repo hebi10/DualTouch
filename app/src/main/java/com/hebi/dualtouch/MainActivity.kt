@@ -6,7 +6,7 @@ import android.os.Handler
 import android.os.Looper
 import android.content.Intent
 import android.content.res.Configuration
-import android.graphics.drawable.GradientDrawable
+import com.hebi.dualtouch.core.SplitOrientation
 import android.os.Bundle
 import android.net.Uri
 import android.content.ActivityNotFoundException
@@ -28,8 +28,7 @@ class MainActivity : Activity() {
     private val updateStatus = object : Runnable {
         override fun run() {
             if (page == Page.HOME && !isFinishing) {
-                statusLabel?.text = serviceStatus()
-                floatingButton?.text = floatingButtonLabel()
+                refreshHomeStatus()
                 uiHandler.postDelayed(this, 900L)
             }
         }
@@ -42,6 +41,10 @@ class MainActivity : Activity() {
     private var restoreScrollY = 0
     private var page = Page.HOME
     private var statusLabel: TextView? = null
+    private var permissionStatus: TextView? = null
+    private var floatingStatus: TextView? = null
+    private var pairStatus: TextView? = null
+    private var nextStepStatus: TextView? = null
     private var floatingButton: Button? = null
     private var chosenMode: MirrorMode = MirrorMode.DUAL_STROKE
 
@@ -66,8 +69,7 @@ class MainActivity : Activity() {
         super.onResume()
         uiHandler.removeCallbacks(updateStatus)
         if (::root.isInitialized) {
-            statusLabel?.text = serviceStatus()
-            floatingButton?.text = floatingButtonLabel()
+            refreshHomeStatus()
         }
         if (page == Page.HOME) uiHandler.post(updateStatus)
     }
@@ -90,6 +92,10 @@ class MainActivity : Activity() {
         UiKit.applyWindowInsets(scrollContainer)
         setContentView(scrollContainer)
         statusLabel = null
+        permissionStatus = null
+        floatingStatus = null
+        pairStatus = null
+        nextStepStatus = null
         floatingButton = null
 
         when (page) {
@@ -163,6 +169,36 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun updateText(view: TextView?, value: String) {
+        if (view != null && view.text.toString() != value) view.text = value
+    }
+
+    private fun refreshHomeStatus() {
+        if (page != Page.HOME) return
+        val service = TouchMirrorService.current
+        val permission = settings.accessibilityDisclosureAccepted && service != null
+        val floating = permission && service?.isFloatingVisible == true
+        val pair = if (floating) service?.connectedPair else null
+        updateText(statusLabel, serviceStatus())
+        updateText(permissionStatus, if (permission) "01 접근성 권한 · 연결됨" else "01 접근성 권한 · 설정 필요")
+        updateText(floatingStatus, if (floating) "02 플로팅 컨트롤 · 표시 중" else "02 플로팅 컨트롤 · 대기")
+        val pairText = if (pair == null) {
+            "03 분할 앱 연결 · 연결 필요"
+        } else {
+            val first = if (pair.orientation == SplitOrientation.HORIZONTAL) "왼쪽" else "위쪽"
+            val second = if (pair.orientation == SplitOrientation.HORIZONTAL) "오른쪽" else "아래쪽"
+            "03 분할 앱 연결 · 연결됨\n$first: ${appDisplayLabel(this, pair.left.packageName)}\n$second: ${appDisplayLabel(this, pair.right.packageName)}"
+        }
+        updateText(pairStatus, pairText)
+        updateText(nextStepStatus, when {
+            !permission -> "다음: 접근성 권한 설정 또는 플로팅 표시를 눌러 권한을 연결하세요."
+            !floating -> "다음: 플로팅 표시를 누르세요."
+            pair == null -> "다음: Android에서 두 앱을 분할한 뒤 Thumb의 앱 연결 메뉴를 누르세요."
+            else -> "다음: Thumb에서 실행 또는 영점 조절을 선택하세요."
+        })
+        updateText(floatingButton, floatingButtonLabel())
+    }
+
     private fun floatingButtonLabel(): String =
         if (TouchMirrorService.current?.isFloatingVisible == true) {
             "플로팅 숨기기"
@@ -173,6 +209,7 @@ class MainActivity : Activity() {
     private fun intro() {
         header("DualTouch", "사용자가 연결한 두 분할 앱의 터치 동기화", false)
         section("한 번의 터치, 두 화면의 반응", 26)
+        addSplitExample()
         card("이 앱의 사용 범위",
             "현재 열려 있는 두 분할 앱을 사용자가 직접 연결하면 한쪽의 탭을 다른 쪽에도 재생합니다. 동일 앱은 Android가 별도 창 2개를 지원할 때만 연결됩니다.")
         card("접근성 서비스 사용",
@@ -180,6 +217,7 @@ class MainActivity : Activity() {
         card("개인정보와 주의사항",
             "화면 내용·비밀번호·터치 기록을 서버에 전송하거나 저장하지 않습니다. " +
                 "입력 수신 중 원래 터치가 차단되거나 재현에 실패할 수 있습니다. 금융·결제·비밀번호·민감한 화면은 차단하거나 지원하지 않습니다.")
+        card("사용 순서", "권한 설정 → 플로팅 표시 → Android에서 두 앱 분할 → Thumb에서 앱 연결 및 실행. 한 손가락 짧은 탭만 지원하며 최대 20초 후 중지됩니다.")
         addAction("내용을 이해하고 계속", top = 26) {
             settings.onboardingRead = true
             go(Page.HOME)
@@ -204,19 +242,20 @@ class MainActivity : Activity() {
         }
 
         root = primary
-        section("서비스 상태", if (viewport.useTwoPanes) 0 else 22)
-        val service = TouchMirrorService.current
+        section("실행 준비 상태", if (viewport.useTwoPanes) 0 else 22)
         val stateCard = UiKit.card(this, palette, 18)
         UiKit.add(stateCard, UiKit.text(this, palette, "현재 상태", 13f, secondary = true))
         statusLabel = UiKit.text(this, palette, serviceStatus(), 17f, true)
         UiKit.add(stateCard, statusLabel!!, topDp = 8)
-        UiKit.add(stateCard, UiKit.text(this, palette,
-            if (service == null) {
-                "권한을 설정하면 플로팅 Thumb를 표시할 수 있습니다."
-            } else {
-                "Thumb 메뉴에서 두 앱의 연결·방향·영점을 조절합니다."
-            }, 13f, secondary = true), topDp = 8)
+        permissionStatus = UiKit.text(this, palette, "", 14f, true)
+        floatingStatus = UiKit.text(this, palette, "", 14f, true)
+        pairStatus = UiKit.text(this, palette, "", 14f, true)
+        nextStepStatus = UiKit.text(this, palette, "", 13f, secondary = true)
+        listOf(permissionStatus, floatingStatus, pairStatus, nextStepStatus).forEach {
+            UiKit.add(stateCard, requireNotNull(it), topDp = 10)
+        }
         UiKit.add(root, stateCard, topDp = 10)
+        addAction("접근성 권한 설정", false) { requestAccessibilitySettings() }
 
         section("플로팅 컨트롤")
         addBody("플로팅 표시를 누르면 원형 Thumb가 나타납니다. " +
@@ -227,15 +266,12 @@ class MainActivity : Activity() {
                 !settings.accessibilityDisclosureAccepted || currentService == null -> requestAccessibilitySettings()
                 currentService.isFloatingVisible -> {
                     currentService.hideFloatingControl()
-                    statusLabel?.text = serviceStatus()
-                    floatingButton?.text = floatingButtonLabel()
+                    refreshHomeStatus()
                 }
                 else -> {
                     val shown = currentService.showFloatingControl()
-                    statusLabel?.text = if (shown) serviceStatus() else {
-                        "Thumb를 표시할 수 없습니다. 접근성 설정을 확인하세요."
-                    }
-                    floatingButton?.text = floatingButtonLabel()
+                    refreshHomeStatus()
+                    if (!shown) Toast.makeText(this, "Thumb를 표시할 수 없습니다. 접근성 설정을 확인하세요.", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -268,6 +304,7 @@ class MainActivity : Activity() {
                 "모든 민감 화면을 판별할 수 없으므로 결제·송금·삭제 등에는 사용하지 마세요.")
         addAction("오류·중지 안내", false) { go(Page.HELP) }
         root = pageRoot
+        refreshHomeStatus()
     }
 
     private fun requestAccessibilitySettings() {
@@ -323,19 +360,34 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun addSplitExample() {
+        val sample = UiKit.card(this, palette)
+        UiKit.add(sample, UiKit.text(this, palette, "분할 화면 예시", 15f, true))
+        val panes = UiKit.panePair(this, 8, 0.5f)
+        listOf(panes.primary to "앱 A\n직접 터치", panes.secondary to "앱 B\n자동 재현").forEach { (pane, label) ->
+            pane.background = UiKit.shape(palette.background, palette.line)
+            pane.setPadding(UiKit.dp(this, 8), UiKit.dp(this, 16), UiKit.dp(this, 8), UiKit.dp(this, 16))
+            UiKit.add(pane, UiKit.centeredLabel(this, label, palette.text, 14f))
+        }
+        UiKit.add(sample, panes.row, topDp = 10)
+        UiKit.add(sample, UiKit.text(this, palette, "한쪽 앱의 짧은 탭을 반대편 위치에 순차 재현합니다. 상하 분할도 지원 대상으로 검증 중입니다.", 13f, secondary = true), topDp = 10)
+        UiKit.add(root, sample, topDp = 12)
+    }
+
     private fun guide() {
         header("실제 분할 앱 연결", "DualTouch 본 앱 하나로 열려 있는 앱 두 개를 제어합니다.")
+        addSplitExample()
         card("1 · 플로팅 표시",
             "접근성 서비스 목적에 동의하고 Android 설정에서 활성화한 뒤 DualTouch 홈에서 플로팅 표시를 선택합니다.")
         card("2 · 실제 앱 두 개 분할",
-            "Android의 좌우 또는 상하 분할 화면에서 원하는 앱을 엽니다. 같은 앱을 두 번 실행하려면 앱·OS의 독립 실행 지원이 필요합니다.")
+            "최근 앱 화면에서 첫 번째 앱 아이콘을 눌러 분할 화면 열기를 선택하고, 두 번째 앱을 고르세요. 삼성 기기에서는 지원하는 경우 Edge 패널에서도 분할 앱을 열 수 있습니다. 메뉴 이름은 기기마다 다릅니다. 같은 앱 두 창은 앱과 OS가 허용할 때만 가능합니다.")
         card("3 · 앱 연결과 방향 선택",
-            "Thumb를 누른 다음 '좌/우 선택 · 앱 연결'에서 좌우 앱 패키지를 확인하고 직접 터치할 방향을 선택합니다.")
+            "Thumb를 누른 다음 '좌/우 선택 · 앱 연결'에서 앱 이름과 패키지를 확인하고 직접 터치할 방향을 선택합니다. 창이 감지되지 않으면 표시된 이유를 확인하고 다시 검색하세요.")
         card("4 · 실행·영점 조절",
-            "Thumb의 영점 조절에서 가로·세로 기준선 방향과 위치(20~80%)를 바꾸고, 빨강/흰색 점으로 위치를 보정합니다. " +
+            "Thumb의 영점 조절에서 직접점은 두 점을 함께, 자동점은 자동점만 이동합니다. 가로·세로 기준선과 위치(20~80%)를 조절하고 저장하세요. 보정은 현재 연결과 방향에만 적용됩니다. " +
                 "실제 분할 방향은 Android 분할 화면에서 변경한 뒤 앱을 다시 연결해야 합니다.")
         card("5 · 긴급 중지",
-            "Thumb의 중지 또는 기기 볼륨 아래 버튼으로 종료합니다. 화면 구성이 바뀌면 앱 연결을 다시 승인해야 합니다.")
+            "Thumb에 남은 실행 시간이 표시되며 최대 20초 후 중지됩니다. Thumb의 중지 또는 볼륨 아래 버튼으로 즉시 새 입력을 중단할 수 있습니다. 스크롤·길게 누르기·여러 손가락 입력은 지원하지 않습니다. 화면 구성이 바뀌면 앱을 다시 연결하세요.")
         addAction("홈에서 플로팅 표시", top = 20) { go(Page.HOME) }
     }
 

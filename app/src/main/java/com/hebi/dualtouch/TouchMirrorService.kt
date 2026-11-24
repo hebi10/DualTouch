@@ -33,6 +33,7 @@ import com.hebi.dualtouch.core.InputInspection
 import com.hebi.dualtouch.core.DispatchGeneration
 import com.hebi.dualtouch.core.GestureFlight
 import com.hebi.dualtouch.core.TapStart
+import com.hebi.dualtouch.core.ThumbUiState
 import com.hebi.dualtouch.core.PairCalibration
 import com.hebi.dualtouch.core.ObservedWindow
 import com.hebi.dualtouch.core.WindowLayer
@@ -97,6 +98,7 @@ class TouchMirrorService : AccessibilityService() {
     private var gestureWatchdog: Runnable? = null
     private var captureFaulted = false
     private var captureStartedAt = 0L
+    private var lastThumbIssue: SafetyIssue? = null
     private var inputDeadline = 0L
     private var interceptedVolumeDown: Long? = null
     private var activeStarted = false
@@ -165,7 +167,11 @@ class TouchMirrorService : AccessibilityService() {
         return SafetyIssue.NONE
     }
 
-    private fun toggleThumbRunning(): SafetyIssue = setThumbRunning(!thumbRunning)
+    private fun toggleThumbRunning(): SafetyIssue {
+        val issue = setThumbRunning(!thumbRunning)
+        lastThumbIssue = issue.takeUnless { it == SafetyIssue.NONE }
+        return issue
+    }
 
     private fun candidateAppPair(): SafetyAssessment {
         val environment = readWindowEnvironment()
@@ -184,6 +190,7 @@ class TouchMirrorService : AccessibilityService() {
         )
         val pair = assessment.pair
         if (!assessment.allowed || pair == null) {
+            lastThumbIssue = assessment.issue
             statusText = "연결 불가: " + WindowSafetyPolicy.message(assessment.issue)
             return assessment.issue
         }
@@ -195,6 +202,7 @@ class TouchMirrorService : AccessibilityService() {
         inputDeadline = 0L
         handler.removeCallbacks(activeTimeout)
         approvedAppPair = displayedPair
+        lastThumbIssue = null
         activeWindowPair = pair
         calibration.setPair(pair)
         activeStarted = true
@@ -240,6 +248,20 @@ class TouchMirrorService : AccessibilityService() {
             modalOpen = menuPaused || overlay?.isCalibrating == true,
         )
 
+    internal val connectedPair: WindowPair?
+        get() = activeWindowPair?.takeIf { isFloatingVisible && approvedAppPair?.matches(it) == true }
+
+    private fun thumbUiState(): ThumbUiState = ThumbUiState.resolve(
+        connected = connectedPair != null,
+        running = thumbRunning,
+        processing = dispatching || gestureFlight.pending,
+        paused = menuPaused || !capturing,
+        calibrating = overlay?.isCalibrating == true,
+        issue = lastThumbIssue,
+        deadline = inputDeadline,
+        now = SystemClock.uptimeMillis(),
+    )
+
     val isArmed: Boolean get() = armed
     val isFloatingVisible: Boolean get() =
         armed && mode == MirrorMode.THUMB && overlay != null
@@ -262,6 +284,7 @@ class TouchMirrorService : AccessibilityService() {
         if (armed) stop("이전 기술 실험 종료")
         dispatchGeneration.invalidate()
         mode = MirrorMode.THUMB
+        lastThumbIssue = null
         sourceSide = runCatching {
             TouchSide.valueOf(
                 calibrationPrefs.getString("source_side", TouchSide.LEFT.name)
@@ -296,7 +319,9 @@ class TouchMirrorService : AccessibilityService() {
             pairProvider = ::inspectTestWindows,
             sideProvider = { sourceSide },
             runningProvider = { thumbRunning },
+            stateProvider = ::thumbUiState,
             calibrationProvider = calibration::offsetFor,
+            calibrationSavedProvider = calibration::hasSaved,
             onRunToggle = ::toggleThumbRunning,
             candidateProvider = ::candidateAppPair,
             onConnectApps = ::connectVisibleApps,
@@ -395,6 +420,8 @@ class TouchMirrorService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (!armed) return
         if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            // Our display-only countdown must not trigger repeated app-tree inspections.
+            if (event.packageName?.toString() == packageName) return
             if (!handler.hasCallbacks(contentRefresh)) handler.postDelayed(contentRefresh, CONTENT_REFRESH_MS)
         } else {
             handler.removeCallbacks(contentRefresh)
@@ -747,6 +774,7 @@ class TouchMirrorService : AccessibilityService() {
                     assessment.issue != SafetyIssue.NONE &&
                     assessment.issue != SafetyIssue.UNAPPROVED_PAIR
                 ) {
+                    lastThumbIssue = assessment.issue
                     approvedAppPair = null
                 }
                 activeStarted = false
