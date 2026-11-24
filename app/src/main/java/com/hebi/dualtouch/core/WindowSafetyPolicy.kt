@@ -49,6 +49,9 @@ enum class SafetyIssue {
     INPUT_INSPECTION_LIMIT,
     TAP_OBSTRUCTED,
     INPUT_FINISHING,
+    INPUT_RECOVERY_REQUIRED,
+    CAPTURE_UNAVAILABLE,
+    INPUT_INSPECTION_TIMEOUT,
 }
 
 data class WindowTap(val window: WindowSnapshot, val point: TapPoint)
@@ -145,6 +148,7 @@ object WindowSafetyPolicy {
     fun inputIssue(applications: List<ObservedWindow>): SafetyIssue? = when {
         applications.any { it.inputInspection == InputInspection.SENSITIVE } -> SafetyIssue.SENSITIVE_INPUT
         applications.any { it.inputInspection == InputInspection.LIMIT_REACHED } -> SafetyIssue.INPUT_INSPECTION_LIMIT
+        applications.any { it.inputInspection == InputInspection.TIME_BUDGET_EXCEEDED } -> SafetyIssue.INPUT_INSPECTION_TIMEOUT
         applications.any { it.inputInspection == InputInspection.UNAVAILABLE } -> SafetyIssue.INPUT_INSPECTION_INCOMPLETE
         else -> null
     }
@@ -186,39 +190,49 @@ object WindowSafetyPolicy {
         SafetyIssue.INPUT_INSPECTION_LIMIT -> "앱 화면이 복잡해 검사 한도 안에서 입력 안전을 확인할 수 없습니다."
         SafetyIssue.TAP_OBSTRUCTED -> "터치 위치가 다른 창에 가려졌거나 앱의 입력 영역을 벗어났습니다."
         SafetyIssue.INPUT_FINISHING -> "Android가 이전 터치를 처리 중입니다. 잠시 뒤 다시 실행해 주세요."
+        SafetyIssue.INPUT_RECOVERY_REQUIRED -> "이전 터치의 종료를 확인하지 못했습니다. 시스템 접근성 서비스를 껐다 켜고 다시 연결해 주세요."
+        SafetyIssue.CAPTURE_UNAVAILABLE -> "접근성 입력을 준비할 수 없습니다. 서비스 권한·화면 잠금·다른 접근성 기능을 확인해 주세요."
+        SafetyIssue.INPUT_INSPECTION_TIMEOUT -> "화면 구조 검사 시간이 초과되었습니다. 안전을 위해 입력을 중지합니다."
     }
 }
 
-enum class InputInspection { CLEAR, SENSITIVE, UNAVAILABLE, LIMIT_REACHED }
+enum class InputInspection { CLEAR, SENSITIVE, UNAVAILABLE, LIMIT_REACHED, TIME_BUDGET_EXCEEDED }
 
 internal fun <Node : Any> inspectInputTree(
     root: Node?,
     limit: Int,
     isSensitive: (Node) -> Boolean,
+    shouldContinue: () -> Boolean = { true },
     children: (Node) -> Iterator<Node?>,
 ): InputInspection {
     if (root == null) return InputInspection.UNAVAILABLE
-    val stack = ArrayDeque<Iterator<Node?>>()
-    stack.addLast(listOf(root).iterator())
-    var inspected = 0
-    var missingChild = false
-    while (stack.isNotEmpty()) {
-        val branch = stack.last()
-        if (!branch.hasNext()) {
-            stack.removeLast()
-            continue
+    return try {
+        val stack = ArrayDeque<Iterator<Node?>>()
+        stack.addLast(listOf(root).iterator())
+        var inspected = 0
+        var missingChild = false
+        while (stack.isNotEmpty()) {
+            if (!shouldContinue()) return InputInspection.TIME_BUDGET_EXCEEDED
+            val branch = stack.last()
+            if (!branch.hasNext()) {
+                stack.removeLast()
+                continue
+            }
+            if (inspected >= limit) return InputInspection.LIMIT_REACHED
+            inspected++
+            val node = branch.next()
+            if (node == null) {
+                missingChild = true
+            } else {
+                if (isSensitive(node)) return InputInspection.SENSITIVE
+                stack.addLast(children(node))
+            }
         }
-        if (inspected == limit) return InputInspection.LIMIT_REACHED
-        inspected++
-        val node = branch.next()
-        if (node == null) {
-            missingChild = true
-        } else {
-            if (isSensitive(node)) return InputInspection.SENSITIVE
-            stack.addLast(children(node))
-        }
+        if (!shouldContinue()) InputInspection.TIME_BUDGET_EXCEEDED
+        else if (missingChild) InputInspection.UNAVAILABLE else InputInspection.CLEAR
+    } catch (_: RuntimeException) {
+        InputInspection.UNAVAILABLE
     }
-    return if (missingChild) InputInspection.UNAVAILABLE else InputInspection.CLEAR
 }
 
 class DispatchGeneration {
