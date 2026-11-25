@@ -60,6 +60,8 @@ class OverlayCaptureRunner : Instrumentation() {
             if (::automation.isInitialized) {
                 runCatching {
                     observations.put(JSONObject().put("failed_stage", stage)
+                        .put("fixture_foreground", activeApplicationPackage()?.takeIf { it in setOf(APP, SETTINGS, LEFT, RIGHT) } ?: "other_or_unknown")
+                        .put("service_enabled_in_settings", serviceEnabledInSettings())
                         .put("fixture_visible_labels", JSONArray(visibleNodes()
                             .filter { it.pkg in setOf(APP, SETTINGS, LEFT, RIGHT) }
                             .map { it.text }.filter { it.isNotBlank() }.distinct().take(60))))
@@ -252,6 +254,51 @@ class OverlayCaptureRunner : Instrumentation() {
             JSONObject().apply { for ((pkg, bounds) in probeWindows()) put(pkg, bounds.flattenToString()) }))
     }
 
+    private fun activeApplicationPackage(): String? {
+        val windows = automation.windows.filter {
+            it.type == AccessibilityWindowInfo.TYPE_APPLICATION && (it.isActive || it.isFocused)
+        }.sortedByDescending { it.isActive }
+        for (window in windows) {
+            val root = window.root ?: continue
+            val pkg = try { root.packageName?.toString() } finally { root.recycle() }
+            if (!pkg.isNullOrBlank()) return pkg
+        }
+        val root = automation.rootInActiveWindow ?: return null
+        return try { root.packageName?.toString() } finally { root.recycle() }
+    }
+
+    private fun serviceEnabledInSettings(): Boolean {
+        val enabled = shell("settings get secure enabled_accessibility_services")
+        return enabled.split(':').any {
+            it.trim() == SERVICE || it.trim() == "$APP/$APP.TouchMirrorService"
+        }
+    }
+
+    // Android Settings can be in the same task as MainActivity. A plain am start
+    // may only bring that task forward, leaving Settings at the top.
+    private fun returnToControllerHome() {
+        check(serviceEnabledInSettings()) { "Service was not explicitly enabled" }
+        repeat(6) { attempt ->
+            val foreground = activeApplicationPackage()
+            if (foreground == APP) return
+            if (foreground != SETTINGS) return@repeat
+            shell("input keyevent KEYCODE_BACK")
+            SystemClock.sleep(700)
+            observations.put(JSONObject().put("return_back_attempt", attempt + 1)
+                .put("settings_still_foreground", activeApplicationPackage() == SETTINGS))
+        }
+        if (activeApplicationPackage() != APP) {
+            // Leave the existing Settings task without force-stopping DualTouch;
+            // the accepted system service and app disclosure must remain intact.
+            shell("input keyevent KEYCODE_HOME")
+            SystemClock.sleep(700)
+            startApp(APP, ".MainActivity", "-f 0x14000000")
+        }
+        waitFor("DualTouch foreground after permission grant", 12000) {
+            activeApplicationPackage() == APP
+        }
+    }
+
     private fun configureService() {
         stage = "permission flow / onboarding"
         startApp(APP, ".MainActivity")
@@ -285,13 +332,19 @@ class OverlayCaptureRunner : Instrumentation() {
         tap(awaitNode("system permission confirmation") {
             it.pkg == SETTINGS && it.text in setOf("Allow", "OK", "허용", "확인")
         })
-        waitFor("system accessibility service enabled") {
-            val enabled = shell("settings get secure enabled_accessibility_services")
-            enabled.split(':').any { it.trim() == SERVICE || it.trim() == "$APP/$APP.TouchMirrorService" }
+        waitFor("system accessibility service enabled") { serviceEnabledInSettings() }
+        observations.put(JSONObject().put("system_service_enabled_after_confirmation", true))
+        stage = "permission flow / return from Settings"
+        returnToControllerHome()
+        stage = "permission flow / bound service on home"
+        waitFor("connected permission on actual home", 20000) {
+            activeApplicationPackage() == APP && visibleNodes().any {
+                it.pkg == APP && it.text == "연결됨"
+            }
         }
+        check(serviceEnabledInSettings()) { "Service permission changed before Thumb setup" }
+        observations.put(JSONObject().put("controller_home_permission_connected", true))
         stage = "permission flow / show Thumb"
-        startApp(APP, ".MainActivity")
-        awaitNode("connected permission on home") { it.pkg == APP && it.text == "연결됨" }
         tapWithScroll(APP, "플로팅 표시")
         thumb("연결")
     }
