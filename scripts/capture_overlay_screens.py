@@ -24,7 +24,7 @@ EXPECTED = COMMON | ({SCENARIO_CAPTURE[SCENARIO]} if SCENARIO in SCENARIO_CAPTUR
 HOME_EVIDENCE = {"QA-home-after-window-change.png", "QA-home-after-hide.png"}
 ALLOWED = EXPECTED | {"QA-stopped.png", "diagnostic-failure.png",
                       "diagnostic-countdown.png", "diagnostic-calibration.png",
-                      "diagnostic-stop-failure.png"}
+                      "diagnostic-stop-failure.png", "diagnostic-launcher-anr.png"}
 if SCENARIO == "home-return":
     ALLOWED |= HOME_EVIDENCE
 

@@ -403,11 +403,58 @@ class OverlayCaptureRunner : Instrumentation() {
         error("Exact DualTouch service row could not be opened through Android Settings")
     }
 
+    private fun recoverOnboardingLauncherAnr(): Boolean {
+        // Isolated emulator, before any accessibility permission is granted.
+        // Do not dismiss arbitrary dialogs or alter actual permission settings.
+        if (shell("getprop ro.kernel.qemu").trim() != "1" || serviceEnabledInSettings()) return false
+        val focus = shell("dumpsys window windows")
+        val launcherAnr = Regex(
+            """(?m)^\s*mCurrentFocus=Window\{[^\n]*Application Not Responding: com\.google\.android\.apps\.nexuslauncher\}"""
+        )
+        if (!launcherAnr.containsMatchIn(focus)) return false
+        screenshot("diagnostic-launcher-anr", "confirmed launcher ANR before permission; not a design match", false)
+        shell("am force-stop com.google.android.apps.nexuslauncher")
+        SystemClock.sleep(1800)
+        startApp(APP, ".MainActivity", "-f 0x14000000")
+        observations.put(JSONObject().put("onboarding_launcher_anr_recovered", true))
+        return true
+    }
+
+    private fun confirmActualDualTouchConsent() {
+        check(!serviceEnabledInSettings()) { "Unexpected permission state before explicit consent" }
+        // The confirmation may be a system dialog rather than TYPE_APPLICATION.
+        // Identify the actual dialog and its live Allow button in the same
+        // focused window. Use one explicit native touch, never a setting write.
+        val title = awaitNode("DualTouch-specific system consent") {
+            it.pkg == SETTINGS && it.text.contains("DualTouch") &&
+                (it.text.contains("full control", ignoreCase = true) ||
+                    it.text.contains("전체 제어") || it.text.contains("완전한 제어"))
+        }
+        val consent = awaitNode("system permission confirmation") {
+            it.pkg == SETTINGS && it.text in setOf("Allow", "OK", "허용", "확인")
+        }
+        val current = visibleNodes().filter { it.pkg == SETTINGS }
+        check(current.any { it.text == title.text } &&
+            current.any { it.text == consent.text && it.bounds == consent.bounds }) {
+            "Actual DualTouch permission dialog changed before confirmation"
+        }
+        check(activeApplicationPackage() == SETTINGS) { "Settings is no longer active" }
+        tap(consent)
+        observations.put(JSONObject().put("actual_consent_dialog_tapped", true))
+    }
+
     private fun configureService() {
         stage = "permission flow / onboarding"
         startApp(APP, ".MainActivity")
-        waitFor("DualTouch foreground before onboarding", 15000) {
-            activeApplicationPackage() == APP && visibleNodes().any { it.pkg == APP }
+        try {
+            waitFor("DualTouch foreground before onboarding", 15000) {
+                activeApplicationPackage() == APP && visibleNodes().any { it.pkg == APP }
+            }
+        } catch (failure: Exception) {
+            if (!recoverOnboardingLauncherAnr()) throw failure
+            waitFor("DualTouch foreground after exact launcher recovery", 15000) {
+                activeApplicationPackage() == APP && visibleNodes().any { it.pkg == APP }
+            }
         }
         observations.put(JSONObject().put("onboarding_foreground_verified", true))
         tapWithScroll(APP, "내용을 이해하고 계속")
@@ -430,10 +477,7 @@ class OverlayCaptureRunner : Instrumentation() {
         }
         check(clickSettingsControl(setOf(toggle.text))) { "Actual service switch action was rejected" }
         stage = "permission flow / system confirmation"
-        val consent = awaitNode("system permission confirmation") {
-            it.pkg == SETTINGS && it.text in setOf("Allow", "OK", "허용", "확인")
-        }
-        check(clickSettingsControl(setOf(consent.text))) { "Actual system confirmation action was rejected" }
+        confirmActualDualTouchConsent()
         waitFor("system accessibility service enabled") { serviceEnabledInSettings() }
         observations.put(JSONObject().put("system_service_enabled_after_confirmation", true))
         stage = "permission flow / return from Settings"

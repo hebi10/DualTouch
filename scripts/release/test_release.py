@@ -123,6 +123,75 @@ class ReleaseBoundaryTests(unittest.TestCase):
         self.assertFalse(any("production" in url for _, url in calls))
         self.assertTrue(any(url.endswith(":commit") for _, url in calls))
 
+    def test_internal_qa_keeps_physical_qa_separate_and_checks_source_version(self):
+        env = {"RELEASE_APPROVED": "true", "GITHUB_REPOSITORY": release.REPO,
+               "GITHUB_REF": "refs/heads/main", "EXPECTED_MAIN_SHA": self.sha,
+               "GITHUB_SHA": self.sha, "EXPECTED_VERSION_CODE": "4",
+               "GITHUB_EVENT_NAME": "workflow_dispatch"}
+        config = {**self.config, "device_qa_passed": False, "accessibility_review_ready": False}
+        ci = {"head_sha": self.sha, "status": "completed", "conclusion": "success"}
+        responses = [{"object": {"sha": self.sha}}, {"workflow_runs": [ci]}]
+        with patch.dict(os.environ, env, clear=True), patch.object(release, "github", side_effect=responses), patch.object(release, "read_json", return_value=config), patch.object(release, "source_version", return_value=(4, "candidate")):
+            self.assertEqual(release.internal_qa_guard(), (self.sha, config))
+        with patch.dict(os.environ, env, clear=True), patch.object(release, "github", return_value=responses[0]), patch.object(release, "source_version", return_value=(3, "older")):
+            with self.assertRaisesRegex(release.Blocked, "versionCode"):
+                release.internal_qa_guard()
+        with patch.dict(os.environ, {**env, "GITHUB_EVENT_NAME": "push"}, clear=True), patch.object(release, "github") as github:
+            with self.assertRaisesRegex(release.Blocked, "manual release request"):
+                release.internal_qa_guard()
+            github.assert_not_called()
+
+    def exercise_internal_qa(self, highest, pending=False):
+        identity = {**self.receipt, "version_code": 4, "version_name": "candidate",
+                    "device_qa_passed": False, "accessibility_review_ready": False}
+        code_four = {"versionCodes": ["4"], "status": "completed"}
+        calls = []
+
+        def api(method, url, token, data=None, binary=False):
+            calls.append((method, url, data))
+            if method == "POST" and url.endswith("/edits"):
+                return {"id": "edit"}
+            if method == "GET" and url.endswith("/tracks"):
+                draft = [{"versionCodes": [], "status": "draft"}] if pending else []
+                return {"tracks": [{"track": "internal", "releases": draft}]}
+            if method == "GET" and url.endswith("/bundles"):
+                return {"bundles": [{"versionCode": highest}]}
+            if method == "GET" and url.endswith("/apks"):
+                return {}
+            if method == "POST" and url.endswith("uploadType=media"):
+                self.assertTrue(binary)
+                return {"sha256": self.digest, "versionCode": 4}
+            if method == "GET" and url.endswith("/tracks/internal"):
+                return {"track": "internal", "releases": [code_four]}
+            return {}
+
+        with patch.object(release, "verify_internal_qa", return_value=identity), patch.object(release, "internal_qa_guard"), patch.object(release, "request_json", side_effect=api), patch.object(release.Path, "read_bytes", return_value=b"test AAB"), patch.object(release, "read_json", return_value={"release_notes": "test"}), patch.object(release, "write_json"):
+            if highest < 4 and not pending:
+                release.play("internal-qa")
+            else:
+                with self.assertRaises(release.Blocked):
+                    release.play("internal-qa")
+        return calls
+
+    def test_internal_qa_publishes_only_internal_and_reads_back(self):
+        calls = self.exercise_internal_qa(highest=3)
+        updates = [(url, data) for method, url, data in calls if method == "PUT"]
+        self.assertEqual(len(updates), 1)
+        url, data = updates[0]
+        self.assertTrue(url.endswith("/tracks/internal"))
+        self.assertEqual(data["track"], "internal")
+        self.assertEqual(data["releases"][0]["versionCodes"], ["4"])
+        self.assertTrue(any(url.endswith(":commit") for _, url, _ in calls))
+        self.assertTrue(any(method == "GET" and url.endswith("/tracks/internal") for method, url, _ in calls))
+
+    def test_internal_qa_does_not_upload_duplicate_or_replace_pending_release(self):
+        for highest, pending in ((4, False), (5, False), (3, True)):
+            with self.subTest(highest=highest, pending=pending):
+                calls = self.exercise_internal_qa(highest, pending)
+                self.assertFalse(any(method == "PUT" or ":commit" in url or "uploadType=" in url
+                                     for method, url, _ in calls))
+                self.assertEqual(calls[-1][0], "DELETE")
+
 
 if __name__ == "__main__":
     unittest.main()
