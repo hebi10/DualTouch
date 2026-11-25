@@ -77,12 +77,17 @@ def github(path):
     return request_json("GET", "https://api.github.com/repos/" + REPO + "/" + path, os.environ.get("GH_TOKEN"))
 
 
-def guard():
+def require_current_main():
     sha = os.environ.get("EXPECTED_MAIN_SHA", "")
     require(os.environ.get("RELEASE_APPROVED") == "true", "Explicit release approval is required.")
     require(os.environ.get("GITHUB_REPOSITORY") == REPO and os.environ.get("GITHUB_REF") == "refs/heads/main", "Release workflows run only on DualTouch main.")
     require(re.fullmatch(r"[a-f0-9]{40}", sha) and sha == os.environ.get("GITHUB_SHA"), "Approved SHA differs from workflow source.")
     require(github("git/ref/heads/main")["object"]["sha"] == sha, "Main changed; freeze and review the new source.")
+    return sha
+
+
+def guard():
+    sha = require_current_main()
     stage = os.environ.get("RELEASE_STAGE", "bundle")
     require(stage in ("bundle", "internal", "closed"), "Invalid release stage.")
     if stage != "bundle":
@@ -102,6 +107,18 @@ def source_version():
     name = re.search(r'versionName\s*=\s*"([^"]+)"', text)
     require(code and name, "Source version is missing.")
     return int(code[1]), name[1]
+
+
+def internal_qa_guard():
+    require(os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch", "Internal QA requires a manual release request.")
+    sha = require_current_main()
+    version = os.environ.get("EXPECTED_VERSION_CODE", "")
+    require(re.fullmatch(r"[1-9][0-9]*", version) and version == str(source_version()[0]), "Approved versionCode differs from source.")
+    config = read_json("release/readiness.json")
+    require(config.get("schema") == 1 and re.fullmatch(r"[a-f0-9]{64}", config.get("upload_certificate_sha256", "")), "Existing upload certificate pin is not configured.")
+    runs = github("actions/workflows/android-ci.yml/runs?branch=main&event=push&head_sha=" + sha)["workflow_runs"]
+    require(bool(runs) and runs[0].get("head_sha") == sha and runs[0].get("status") == "completed" and runs[0].get("conclusion") == "success", "Latest exact-main Android CI has not passed.")
+    return sha, config
 
 
 def restore():
@@ -203,6 +220,45 @@ def verify_input():
     return sha, config, identity
 
 
+def internal_qa_manifest(identity, config):
+    return {
+        **identity,
+        "distribution": "internal QA only",
+        "device_qa_passed": config["device_qa_passed"],
+        "accessibility_review_ready": config["accessibility_review_ready"],
+    }
+
+
+def verify_internal_qa():
+    sha, config = internal_qa_guard()
+    identity = verify_aab("candidate/DualTouch.aab", sha, config)
+    require(read_json("candidate/manifest.json") == internal_qa_manifest(identity, config), "Internal QA build manifest differs from independently verified AAB.")
+    return internal_qa_manifest(identity, config)
+
+
+def version_codes(values):
+    codes = []
+    for value in values:
+        value = str(value)
+        require(re.fullmatch(r"[1-9][0-9]*", value), "Malformed Play version inventory.")
+        codes.append(int(value))
+    return codes
+
+
+def play_inventory(root, tracks, token):
+    bundles = request_json("GET", root + "/bundles", token).get("bundles", [])
+    apks = request_json("GET", root + "/apks", token).get("apks", [])
+    codes = version_codes(item.get("versionCode") for item in bundles + apks)
+    internal = []
+    for track in tracks:
+        for item in track.get("releases", []):
+            release_codes = version_codes(item.get("versionCodes", []))
+            codes.extend(release_codes)
+            if track["track"] == "internal":
+                internal.append({"version_codes": release_codes, "status": item.get("status")})
+    return max(codes, default=0), internal
+
+
 def closed_payload(internal, bundles, receipt, closed, expected_hash):
     require(closed not in ("", "internal", "production", "open") and ":" not in closed, "Closed track must be the exact configured existing phone closed-test ID.")
     code = str(receipt["version_code"])
@@ -215,8 +271,13 @@ def closed_payload(internal, bundles, receipt, closed, expected_hash):
 
 
 def play(action):
-    require(action in ("internal", "closed"), "Unsupported publishing action.")
-    if action == "internal":
+    require(action in ("internal", "internal-qa", "closed"), "Unsupported publishing action.")
+    check_source = guard
+    if action == "internal-qa":
+        check_source = internal_qa_guard
+        identity = verify_internal_qa()
+        track = "internal"
+    elif action == "internal":
         sha, config, identity = verify_input()
         track = "internal"
     else:
@@ -236,7 +297,11 @@ def play(action):
     try:
         tracks = request_json("GET", root + "/tracks", token)
         require(any(t["track"] == track for t in tracks.get("tracks", [])), "Target track does not exist. Configure it in Play Console first.")
-        if action == "internal":
+        if action != "closed":
+            if action == "internal-qa":
+                highest, internal = play_inventory(root, tracks["tracks"], token)
+                require(identity["version_code"] > highest, "Approved versionCode already exists or is older than Play inventory.")
+                require(all(r["status"] == "completed" for r in internal), "Resolve the pending internal release in Play Console before publishing.")
             upload = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/" + PACKAGE + "/edits/" + urllib.parse.quote(edit_id, safe="") + "/bundles?uploadType=media"
             result = request_json("POST", upload, token, Path("candidate/DualTouch.aab").read_bytes(), binary=True)
             require(result.get("sha256") == identity["aab_sha256"] and result.get("versionCode") == identity["version_code"], "Play upload identity differs from verified AAB.")
@@ -246,11 +311,11 @@ def play(action):
             internal = request_json("GET", root + "/tracks/internal", token)
             bundles = request_json("GET", root + "/bundles", token)
             payload = closed_payload(internal, bundles, identity, track, os.environ.get("AAB_SHA256", ""))
-        guard()
+        check_source()
         target = "/tracks/" + urllib.parse.quote(track, safe="")
         request_json("PUT", root + target, token, payload)
         request_json("POST", root + ":validate", token, {})
-        guard()
+        check_source()
         request_json("POST", root + ":commit", token, {})
         committed = True
         receipt = {**identity, "track": track, "committed": True, "readback_completed": False}
@@ -272,16 +337,18 @@ def play(action):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["guard", "restore", "cleanup", "stage", "verify", "internal", "closed", "digest"])
+    parser.add_argument("action", choices=["guard", "restore", "cleanup", "stage", "verify", "internal", "internal-qa-guard", "verify-internal-qa", "internal-qa", "closed", "digest"])
     action = parser.parse_args().action
     if action == "digest":
         print(runtime_digest())
     elif action == "verify":
         verify_input()
-    elif action in ("internal", "closed"):
+    elif action == "verify-internal-qa":
+        verify_internal_qa()
+    elif action in ("internal", "internal-qa", "closed"):
         play(action)
     else:
-        {"guard": guard, "restore": restore, "cleanup": cleanup, "stage": stage}[action]()
+        {"guard": guard, "internal-qa-guard": internal_qa_guard, "restore": restore, "cleanup": cleanup, "stage": stage}[action]()
 
 
 if __name__ == "__main__":
