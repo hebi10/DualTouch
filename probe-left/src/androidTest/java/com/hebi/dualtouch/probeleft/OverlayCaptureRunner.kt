@@ -473,11 +473,7 @@ class OverlayCaptureRunner : Instrumentation() {
         error("No actual pair approval available")
     }
 
-    private fun runCapture() {
-        stage = "permission flow"
-        configureService()
-        stage = "real split"
-        openSplit()
+    private fun connectAndOpenReadyMenu(captureDesigns: Boolean) {
         stage = "app connection"
         SystemClock.sleep(1500)
         requireSplit()
@@ -492,7 +488,7 @@ class OverlayCaptureRunner : Instrumentation() {
         check(pairNodes.any { it.text.contains(LEFT) } && pairNodes.any { it.text.contains(RIGHT) }) {
             "The approval panel must identify both actual probe packages"
         }
-        screenshot("DES-08-pair-selection", "two actual probe windows and explicit approval")
+        if (captureDesigns) screenshot("DES-08-pair-selection", "two actual probe windows and explicit approval")
         tap(approval)
 
         stage = "ready thumb and menu"
@@ -513,14 +509,16 @@ class OverlayCaptureRunner : Instrumentation() {
         }
         observations.put(JSONObject().put("approval_outcome", "ready"))
         requireSplit()
-        screenshot("DES-06-thumb-ready", "approved pair; input not running")
+        if (captureDesigns) screenshot("DES-06-thumb-ready", "approved pair; input not running")
         tap(thumb("대기"))
         awaitNode("ready menu") { it.pkg == APP && it.text.startsWith("연결됨 · 실행 대기") }
         awaitNode("execute button") { it.pkg == APP && it.text == "실행" }
         awaitNode("calibration button") { it.pkg == APP && it.text == "영점 조절" }
         requireSplit()
-        screenshot("DES-07-thumb-menu", "approved pair; three actions")
+        if (captureDesigns) screenshot("DES-07-thumb-menu", "approved pair; three actions")
+    }
 
+    private fun captureCalibration() {
         stage = "calibration"
         recordOverlayInventory("before_calibration")
         tapText(APP, "영점 조절")
@@ -540,29 +538,95 @@ class OverlayCaptureRunner : Instrumentation() {
         recordOverlayInventory("calibration_visible")
         requireSplit()
         screenshot("DES-10-calibration", "real calibration overlay; both reference markers")
+        stage = "calibration / cancel"
         tapText(APP, "취소")
         thumb("대기")
+    }
 
+    private fun captureCountdown() {
         stage = "countdown"
-        tap(thumb("대기"))
         requireSplit()
         tapText(APP, "실행")
-        awaitNode("actual active countdown", 7000) {
-            it.pkg == APP && Regex("(?:[1-9]|1[0-9]|20)초").matches(it.text) &&
-                it.description.startsWith("DualTouch Thumb.") && it.description.contains("실행 중")
+        val running = awaitNode("actual active countdown or safety block", 7000) {
+            it.pkg == APP && it.description.startsWith("DualTouch Thumb.") &&
+                (it.text == "오류" || (Regex("(?:[1-9]|1[0-9]|20)초").matches(it.text) &&
+                    it.description.contains("실행 중")))
         }
+        check(running.text != "오류") { "Countdown blocked: " + running.description }
         requireSplit()
         screenshot("DES-09-thumb-running", "active real countdown; no mirrored taps issued")
-        stage = "emergency stop"
+    }
+
+    private fun stopScenario(name: String) {
+        stage = "$name / emergency stop"
+        // Never start another scenario until the controller and any armed input
+        // have actually stopped. No automatic reactivation of a failed run.
         shell("input keyevent KEYCODE_VOLUME_DOWN")
-        waitFor("thumb removed by volume-down") {
-            visibleNodes().none { it.pkg == APP && it.description.startsWith("DualTouch Thumb.") }
+        waitFor("all controller overlays removed by volume-down") {
+            automation.windows.none { window ->
+                if (window.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) false
+                else {
+                    val root = window.getRoot(0)
+                    try { root == null || root.packageName?.toString() == APP }
+                    finally { root?.recycle() }
+                }
+            }
         }
         requireSplit()
-        screenshot("QA-stopped", "emergency stop; both probe windows remain", false)
-        observations.put(JSONObject().put("emergency_stop_overlay_removed", true))
-
-        // The controller's own activity is forbidden as a target. Do not fake DES-04.
-        observations.put(JSONObject().put("DES-04", "not captured: opening controller home can invalidate the approved pair"))
+        observations.put(JSONObject().put("scenario", name).put("emergency_stop_overlay_removed", true))
+        if (name == "countdown") screenshot("QA-stopped", "emergency stop; both probe windows remain", false)
     }
+
+    private fun restartForIndependentCalibration() {
+        stage = "calibration session / return to controller"
+        check(serviceEnabledInSettings())
+        returnToControllerHome()
+        awaitNode("connected permission on home") { it.pkg == APP && it.text == "연결됨" }
+        tapWithScroll(APP, "플로팅 표시")
+        thumb("연결")
+        stage = "calibration session / real split"
+        if (!splitVisible()) openSplit()
+        requireSplit()
+        connectAndOpenReadyMenu(captureDesigns = false)
+    }
+
+    private fun runCapture() {
+        stage = "permission flow"
+        configureService()
+        stage = "real split"
+        openSplit()
+        connectAndOpenReadyMenu(captureDesigns = true)
+
+        val errors = mutableListOf<String>()
+        try {
+            captureCountdown()
+            observations.put(JSONObject().put("scenario", "countdown").put("capture_completed", true))
+        } catch (failure: Exception) {
+            val message = "$stage: ${failure.message ?: failure.javaClass.simpleName}"
+            errors.add(message)
+            observations.put(JSONObject().put("scenario", "countdown").put("error", message))
+            runCatching { screenshot("diagnostic-countdown", "diagnostic only; not a design match", false) }
+        } finally {
+            stopScenario("countdown")
+        }
+
+        // A separate explicit setup/approval for visual calibration, not a
+        // retry of the previous run. Preserve every failed scenario in the report.
+        restartForIndependentCalibration()
+        try {
+            captureCalibration()
+            observations.put(JSONObject().put("scenario", "calibration").put("capture_completed", true))
+        } catch (failure: Exception) {
+            val message = "$stage: ${failure.message ?: failure.javaClass.simpleName}"
+            errors.add(message)
+            observations.put(JSONObject().put("scenario", "calibration").put("error", message))
+            runCatching { screenshot("diagnostic-calibration", "diagnostic only; not a design match", false) }
+        } finally {
+            stopScenario("calibration")
+        }
+        observations.put(JSONObject().put("DES-04", "not captured: opening controller home can invalidate the approved pair"))
+        stage = "scenario results"
+        check(errors.isEmpty()) { errors.joinToString("; ") }
+    }
+
 }

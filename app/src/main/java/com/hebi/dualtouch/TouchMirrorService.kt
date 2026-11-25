@@ -897,19 +897,66 @@ class TouchMirrorService : AccessibilityService() {
         )
     }
 
-    private fun readWindowEnvironment(): Pair<List<ReadWindow>, SplitWorkArea>? = try {
-        val deadline = SystemClock.uptimeMillis() + INSPECTION_BUDGET_MS
-        val snapshot = observeWindows(deadline)
-        val workArea = splitWorkArea()
-        if (SystemClock.uptimeMillis() >= deadline && snapshot.none { it.metadata.inputInspection == InputInspection.TIME_BUDGET_EXCEEDED }) {
-            null
-        } else snapshot to workArea
-    } catch (_: RuntimeException) {
-        null
+    // Numeric timing only, restricted to debuggable emulator builds. No
+    // packages, window identifiers, bounds, text, nodes, or touch data.
+    private val inspectionDiagnosticsEnabled by lazy {
+        (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
+            android.os.Build.HARDWARE in setOf("ranchu", "goldfish")
+    }
+    private var lastInspectionTimingReportAt = -1_000L
+
+    private enum class InspectionPhase { WINDOWS, APP_ROOT, OVERLAY_ROOT, TREE, WORK_AREA }
+
+    private class InspectionTiming {
+        private val elapsed = LongArray(InspectionPhase.values().size)
+        fun add(phase: InspectionPhase, duration: Long) {
+            elapsed[phase.ordinal] += duration
+        }
+        fun get(phase: InspectionPhase): Long = elapsed[phase.ordinal]
     }
 
-    private fun observeWindows(deadline: Long): List<ReadWindow> {
-        return windows.map { window ->
+    private inline fun <T> InspectionTiming?.measure(phase: InspectionPhase, block: () -> T): T {
+        if (this == null) return block()
+        val start = SystemClock.uptimeMillis()
+        return try { block() } finally { add(phase, SystemClock.uptimeMillis() - start) }
+    }
+
+    private fun readWindowEnvironment(): Pair<List<ReadWindow>, SplitWorkArea>? {
+        val started = SystemClock.uptimeMillis()
+        val deadline = started + INSPECTION_BUDGET_MS
+        val timing = if (inspectionDiagnosticsEnabled) InspectionTiming() else null
+        var outcome = "exception"
+        return try {
+            val snapshot = observeWindows(deadline, timing)
+            val workArea = timing.measure(InspectionPhase.WORK_AREA) { splitWorkArea() }
+            val treeTimedOut = snapshot.any { it.metadata.inputInspection == InputInspection.TIME_BUDGET_EXCEEDED }
+            val overBudget = SystemClock.uptimeMillis() >= deadline
+            outcome = if (treeTimedOut || overBudget) "timeout" else "complete"
+            if (overBudget && !treeTimedOut) null else snapshot to workArea
+        } catch (_: RuntimeException) {
+            null
+        } finally {
+            if (timing != null) {
+                val now = SystemClock.uptimeMillis()
+                val total = now - started
+                if ((total >= INSPECTION_BUDGET_MS || outcome == "timeout") &&
+                    now - lastInspectionTimingReportAt >= 250L) {
+                    lastInspectionTimingReportAt = now
+                    val windowsMs = timing.get(InspectionPhase.WINDOWS)
+                    val appRootMs = timing.get(InspectionPhase.APP_ROOT)
+                    val overlayRootMs = timing.get(InspectionPhase.OVERLAY_ROOT)
+                    val treeMs = timing.get(InspectionPhase.TREE)
+                    val workAreaMs = timing.get(InspectionPhase.WORK_AREA)
+                    val otherMs = (total - windowsMs - appRootMs - overlayRootMs - treeMs - workAreaMs).coerceAtLeast(0L)
+                    android.util.Log.i("DualTouchInspection",
+                        "inspection total_ms=$total windows_ms=$windowsMs app_root_ms=$appRootMs overlay_root_ms=$overlayRootMs tree_ms=$treeMs work_area_ms=$workAreaMs other_ms=$otherMs outcome=$outcome")
+                }
+            }
+        }
+    }
+
+    private fun observeWindows(deadline: Long, timing: InspectionTiming?): List<ReadWindow> {
+        return timing.measure(InspectionPhase.WINDOWS) { windows }.map { window ->
             val bounds = Rect()
             window.getBoundsInScreen(bounds)
             val layer = when (window.type) {
@@ -926,11 +973,13 @@ class TouchMirrorService : AccessibilityService() {
             // Keep every window in the geometry/obstruction snapshot.
             val budgetAvailable = SystemClock.uptimeMillis() < deadline
             val root = if (layer.requiresPackageIdentity() && budgetAvailable) {
-                window.getRoot(
-                    if (layer == WindowLayer.APPLICATION)
-                        AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID
-                    else 0
-                )
+                timing.measure(if (layer == WindowLayer.APPLICATION) InspectionPhase.APP_ROOT else InspectionPhase.OVERLAY_ROOT) {
+                    window.getRoot(
+                        if (layer == WindowLayer.APPLICATION)
+                            AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID
+                        else 0
+                    )
+                }
             } else null
             val input = if (layer == WindowLayer.APPLICATION) {
                 if (!budgetAvailable || SystemClock.uptimeMillis() >= deadline) {
@@ -938,16 +987,18 @@ class TouchMirrorService : AccessibilityService() {
                 } else {
                     // Prefetch reduces individual remote node lookups. Still inspect
                     // every reachable node within the same limit and deadline.
-                    inspectInputTree(
-                        root, INPUT_NODE_LIMIT,
-                        isSensitive = { it.isPassword || (it.isEditable && it.isFocused) },
-                        shouldContinue = { SystemClock.uptimeMillis() < deadline },
-                        children = { node ->
-                            (0 until node.childCount).asSequence().map {
-                                node.getChild(it, AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID)
-                            }.iterator()
-                        },
-                    )
+                    timing.measure(InspectionPhase.TREE) {
+                        inspectInputTree(
+                            root, INPUT_NODE_LIMIT,
+                            isSensitive = { it.isPassword || (it.isEditable && it.isFocused) },
+                            shouldContinue = { SystemClock.uptimeMillis() < deadline },
+                            children = { node ->
+                                (0 until node.childCount).asSequence().map {
+                                    node.getChild(it, AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID)
+                                }.iterator()
+                            },
+                        )
+                    }
                 }
             } else InputInspection.CLEAR
             ReadWindow(window, ObservedWindow(

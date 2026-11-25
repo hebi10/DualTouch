@@ -19,7 +19,8 @@ EXPECTED = {
     "DES-08-pair-selection.png", "DES-09-thumb-running.png",
     "DES-10-calibration.png",
 }
-ALLOWED = EXPECTED | {"QA-stopped.png", "diagnostic-failure.png"}
+ALLOWED = EXPECTED | {"QA-stopped.png", "diagnostic-failure.png",
+                      "diagnostic-countdown.png", "diagnostic-calibration.png"}
 
 
 def adb(*args, timeout=45):
@@ -128,7 +129,7 @@ try:
     prepare_fixture()
     result = subprocess.run(
         ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "source_sha", SOURCE, RUNNER],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=360, check=False,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=480, check=False,
     )
     (OUT / "instrumentation.txt").write_bytes(result.stdout)
     collect()
@@ -146,6 +147,16 @@ except Exception as error:
         except Exception:
             pass
 finally:
+    if is_emulator:
+        # Retain only the controller's exact numeric diagnostic format; never
+        # export general logcat or screen/input data.
+        try:
+            lines = adb("logcat", "-d", "-v", "raw", "-s", "DualTouchInspection:I").decode("utf-8", errors="replace").splitlines()
+            pattern = re.compile(r"inspection total_ms=\d+ windows_ms=\d+ app_root_ms=\d+ overlay_root_ms=\d+ tree_ms=\d+ work_area_ms=\d+ other_ms=\d+ outcome=(complete|timeout|exception)")
+            matches = [line for line in lines if pattern.fullmatch(line)]
+            (OUT / "inspection-timing.txt").write_text("\n".join(matches[-200:]) + "\n", encoding="utf-8")
+        except Exception:
+            (OUT / "inspection-timing.txt").write_text("Numeric timing collection unavailable\n", encoding="utf-8")
     for command in [
         ("input", "keyevent", "KEYCODE_VOLUME_DOWN"),
         ("am", "force-stop", "com.hebi.dualtouch"),
