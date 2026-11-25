@@ -103,6 +103,11 @@ try:
     launch()
     capture("phone-01-intro-light")
     tap("내용을 이해하고 계속")
+    home = nodes()
+    home_text = [node.get("text", "") for node in home.iter("node")]
+    assert any("01 접근성 권한" in value for value in home_text), "Permission progress is missing"
+    assert any("02 플로팅 컨트롤" in value for value in home_text), "Floating progress is missing"
+    assert any("03 분할 앱 연결" in value for value in home_text), "Pair progress is missing"
     capture("phone-02-home-light")
     tap("표시 설정")
     capture("phone-03-settings-light")

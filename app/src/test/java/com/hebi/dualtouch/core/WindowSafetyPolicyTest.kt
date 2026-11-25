@@ -8,6 +8,9 @@ import org.junit.Test
 class WindowSafetyPolicyTest {
     private val leftBounds = ScreenRect(0, 44, 500, 1120)
     private val rightBounds = ScreenRect(520, 44, 1020, 1120)
+    private val workArea = SplitWorkArea(
+        ScreenRect(0, 0, 1020, 1170), ScreenRect(0, 44, 1020, 1120), 24,
+    )
 
     private fun left(focused: Boolean = true, display: Int = 0) =
         ObservedWindow(WindowLayer.APPLICATION, TestPackages.LEFT, leftBounds, display, focused)
@@ -17,7 +20,7 @@ class WindowSafetyPolicyTest {
     private fun assessment(vararg extra: ObservedWindow) =
         WindowSafetyPolicy.inspect(
             listOf(left(), right()) + extra.toList(),
-            "com.hebi.dualtouch"
+            "com.hebi.dualtouch", workArea
         )
 
     @Test fun acceptsExactlyTwoFocusedTestApps() {
@@ -69,11 +72,11 @@ class WindowSafetyPolicyTest {
 
     @Test fun rejectsUnfocusedAndDifferentDisplay() {
         val noFocus = WindowSafetyPolicy.inspect(
-            listOf(left(false), right(false)), "com.hebi.dualtouch"
+            listOf(left(false), right(false)), "com.hebi.dualtouch", workArea
         )
         assertEquals(SafetyIssue.NO_FOCUSED_TARGET, noFocus.issue)
         val different = WindowSafetyPolicy.inspect(
-            listOf(left(display = 0), right(display = 2)), "com.hebi.dualtouch"
+            listOf(left(display = 0), right(display = 2)), "com.hebi.dualtouch", workArea
         )
         assertEquals(SafetyIssue.DIFFERENT_DISPLAY, different.issue)
     }
@@ -81,7 +84,7 @@ class WindowSafetyPolicyTest {
     @Test fun rejectsMissingOrUnknownWindows() {
         assertFalse(
             WindowSafetyPolicy.inspect(
-                listOf(left()), "com.hebi.dualtouch"
+                listOf(left()), "com.hebi.dualtouch", workArea
             ).allowed
         )
         assertEquals(
@@ -99,5 +102,44 @@ class WindowSafetyPolicyTest {
         generation.invalidate()
         assertFalse(generation.valid(token))
         assertTrue(generation.valid(generation.current()))
+    }
+
+    @Test fun blocksEvenSmallHigherWindowAtTapCoordinate() {
+        val app = left().copy(windowId = 11, zOrder = 2)
+        val smallBar = ObservedWindow(
+            WindowLayer.SYSTEM, "android", ScreenRect(120, 200, 180, 220), zOrder = 3,
+        )
+        val window = WindowSnapshot(TestPackages.LEFT, leftBounds, windowId = 11)
+        val tap = WindowTap(window, TapPoint(150f, 210f))
+        assertTrue(assessment(smallBar).allowed)
+        assertFalse(WindowSafetyPolicy.isTapUnobstructed(tap, listOf(app, smallBar)))
+        assertFalse(WindowSafetyPolicy.isTapUnobstructed(tap, listOf(app, smallBar.copy(zOrder = 2))))
+        assertTrue(WindowSafetyPolicy.isTapUnobstructed(tap, listOf(app, smallBar.copy(zOrder = 1))))
+        assertTrue(WindowSafetyPolicy.isTapUnobstructed(tap, listOf(app, smallBar.copy(displayId = 2))))
+        assertTrue(WindowSafetyPolicy.isTapUnobstructed(tap.copy(point = TapPoint(190f, 210f)),
+            listOf(app, smallBar)))
+        assertFalse(WindowSafetyPolicy.isTapUnobstructed(tap, listOf(app.copy(windowId = 12))))
+    }
+
+    @Test fun treeOnlyReadsUpToItsBudgetAndReportsUnavailableNodes() {
+        var childrenRead = 0
+        val result = inspectInputTree(
+            root = 0, limit = 3, isSensitive = { false },
+            children = { node ->
+                if (node == 0) (1..1000).asSequence().map { ++childrenRead }.iterator()
+                else emptyList<Int>().iterator()
+            },
+        )
+        assertEquals(InputInspection.LIMIT_REACHED, result)
+        assertEquals(2, childrenRead)
+
+        val exactBudget = inspectInputTree(0, 3, { false }) { node ->
+            if (node == 0) listOf(1, 2).iterator() else emptyList<Int>().iterator()
+        }
+        assertEquals(InputInspection.CLEAR, exactBudget)
+        assertEquals(InputInspection.UNAVAILABLE,
+            inspectInputTree(0, 3, { false }) { listOf<Int?>(null).iterator() })
+        assertEquals(InputInspection.SENSITIVE,
+            inspectInputTree(0, 3, { it == 1 }) { listOf<Int?>(null, 1).iterator() })
     }
 }

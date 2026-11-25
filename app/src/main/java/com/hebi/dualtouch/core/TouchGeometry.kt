@@ -13,6 +13,9 @@ data class ScreenRect(
     val height: Int get() = bottom - top
     val isValid: Boolean get() = width > 0 && height > 0
 
+    fun overlaps(other: ScreenRect): Boolean =
+        left < other.right && right > other.left && top < other.bottom && bottom > other.top
+
     fun contains(x: Float, y: Float, inset: Float = 0f): Boolean =
         isValid && x >= left + inset && x < right - inset &&
             y >= top + inset && y < bottom - inset
@@ -69,39 +72,91 @@ fun WindowPair.source(side: TouchSide): WindowSnapshot =
 fun WindowPair.target(side: TouchSide): WindowSnapshot =
     if (side == TouchSide.LEFT) right else left
 
+data class SplitWorkArea(
+    val display: ScreenRect,
+    val usable: ScreenRect,
+    val tolerancePx: Int,
+) {
+    private fun nearEdge(position: Int, outer: Int, inner: Int): Boolean =
+        position in min(outer, inner) - tolerancePx..max(outer, inner) + tolerancePx
+
+    private fun fillsWidth(bounds: ScreenRect): Boolean =
+        nearEdge(bounds.left, display.left, usable.left) &&
+            nearEdge(bounds.right, display.right, usable.right)
+
+    private fun fillsHeight(bounds: ScreenRect): Boolean =
+        nearEdge(bounds.top, display.top, usable.top) &&
+            nearEdge(bounds.bottom, display.bottom, usable.bottom)
+
+    fun supports(first: ScreenRect, second: ScreenRect, orientation: SplitOrientation): Boolean {
+        if (!display.isValid || !usable.isValid || tolerancePx < 1) return false
+        return when (orientation) {
+            SplitOrientation.HORIZONTAL ->
+                first.width >= usable.width / 5 && second.width >= usable.width / 5 &&
+                    second.left - first.right in 0..min(tolerancePx, usable.width / 12) &&
+                    nearEdge(first.left, display.left, usable.left) &&
+                    nearEdge(second.right, display.right, usable.right) &&
+                    fillsHeight(first) && fillsHeight(second)
+            SplitOrientation.VERTICAL ->
+                first.height >= usable.height / 5 && second.height >= usable.height / 5 &&
+                    second.top - first.bottom in 0..min(tolerancePx, usable.height / 12) &&
+                    nearEdge(first.top, display.top, usable.top) &&
+                    nearEdge(second.bottom, display.bottom, usable.bottom) &&
+                    fillsWidth(first) && fillsWidth(second)
+        }
+    }
+}
+
 object SplitGeometry {
-    fun detect(first: WindowSnapshot, second: WindowSnapshot): WindowPair? {
+    fun detect(
+        first: WindowSnapshot,
+        second: WindowSnapshot,
+        systemDivider: ScreenRect? = null,
+        workArea: SplitWorkArea? = null,
+    ): WindowPair? {
         val a = first.bounds
         val b = second.bounds
         if (!a.isValid || !b.isValid || first.displayId != second.displayId) return null
 
         val left = if (a.left <= b.left) first else second
         val right = if (left === first) second else first
-        val horizontal = left.bounds.right <= right.bounds.left &&
-            overlapFraction(left.bounds.top, left.bounds.bottom,
-                right.bounds.top, right.bounds.bottom) >= 0.8f &&
-            sizeRatio(left.bounds.width, right.bounds.width) >= 0.75f
-        if (horizontal) return WindowPair(left, right, SplitOrientation.HORIZONTAL)
+        if (left.bounds.right <= right.bounds.left &&
+            overlapFraction(left.bounds.top, left.bounds.bottom, right.bounds.top, right.bounds.bottom) >= 0.8f &&
+            hasSplitEvidence(left.bounds, right.bounds, systemDivider, workArea, SplitOrientation.HORIZONTAL)
+        ) return WindowPair(left, right, SplitOrientation.HORIZONTAL)
 
         val upper = if (a.top <= b.top) first else second
         val lower = if (upper === first) second else first
-        val vertical = upper.bounds.bottom <= lower.bounds.top &&
-            overlapFraction(upper.bounds.left, upper.bounds.right,
-                lower.bounds.left, lower.bounds.right) >= 0.8f &&
-            sizeRatio(upper.bounds.height, lower.bounds.height) >= 0.75f
-        if (vertical) return WindowPair(upper, lower, SplitOrientation.VERTICAL)
+        if (upper.bounds.bottom <= lower.bounds.top &&
+            overlapFraction(upper.bounds.left, upper.bounds.right, lower.bounds.left, lower.bounds.right) >= 0.8f &&
+            hasSplitEvidence(upper.bounds, lower.bounds, systemDivider, workArea, SplitOrientation.VERTICAL)
+        ) return WindowPair(upper, lower, SplitOrientation.VERTICAL)
         return null
+    }
+
+    private fun hasSplitEvidence(
+        first: ScreenRect,
+        second: ScreenRect,
+        divider: ScreenRect?,
+        workArea: SplitWorkArea?,
+        orientation: SplitOrientation,
+    ): Boolean {
+        if (divider == null) return workArea?.supports(first, second, orientation) == true
+        if (!divider.isValid) return false
+        val x = divider.left + divider.width / 2
+        val y = divider.top + divider.height / 2
+        return when (orientation) {
+            SplitOrientation.HORIZONTAL -> divider.height >= divider.width &&
+                x in first.right..second.left && y in max(first.top, second.top) until min(first.bottom, second.bottom)
+            SplitOrientation.VERTICAL -> divider.width >= divider.height &&
+                y in first.bottom..second.top && x in max(first.left, second.left) until min(first.right, second.right)
+        }
     }
 
     private fun overlapFraction(aStart: Int, aEnd: Int, bStart: Int, bEnd: Int): Float {
         val length = (min(aEnd, bEnd) - max(aStart, bStart)).coerceAtLeast(0)
         val denominator = min(aEnd - aStart, bEnd - bStart)
         return if (denominator <= 0) 0f else length.toFloat() / denominator
-    }
-
-    private fun sizeRatio(a: Int, b: Int): Float {
-        val maxLength = max(a, b)
-        return if (maxLength <= 0) 0f else min(a, b).toFloat() / maxLength
     }
 }
 
@@ -191,11 +246,15 @@ object TestPackages {
 }
 
 object WindowPairResolver {
-    fun resolve(windows: List<WindowSnapshot>): WindowPair? {
+    fun resolve(
+        windows: List<WindowSnapshot>,
+        systemDivider: ScreenRect?,
+        workArea: SplitWorkArea?,
+    ): WindowPair? {
         val first = windows.filter { it.packageName == TestPackages.LEFT }
         val second = windows.filter { it.packageName == TestPackages.RIGHT }
         if (first.size != 1 || second.size != 1) return null
-        return SplitGeometry.detect(first.single(), second.single())
+        return SplitGeometry.detect(first.single(), second.single(), systemDivider, workArea)
             ?.takeIf {
                 it.left.packageName == TestPackages.LEFT &&
                     it.right.packageName == TestPackages.RIGHT
