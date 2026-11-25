@@ -1,0 +1,65 @@
+name: DT-OPS-01 Play WIF preflight
+on:
+  workflow_dispatch:
+    inputs:
+      expected_main_sha:
+        description: Exact reviewed current main SHA
+        required: true
+        type: string
+      check_approved:
+        description: Approve temporary uncommitted Play edit for account and inventory inspection (no upload)
+        type: boolean
+        required: true
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: dualtouch-play-release
+  cancel-in-progress: false
+jobs:
+  preflight:
+    if: github.repository == 'hebi10/DualTouch' && github.ref == 'refs/heads/main' && inputs.check_approved
+    environment: google-play
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+      CHECK_APPROVED: ${{ inputs.check_approved }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify main and WIF configuration without printing values
+        env:
+          PLAY_PROVIDER: ${{ vars.PLAY_WORKLOAD_IDENTITY_PROVIDER }}
+          PLAY_ACCOUNT: ${{ vars.PLAY_SERVICE_ACCOUNT }}
+        run: |
+          python3 scripts/release/play_preflight.py guard
+          test -n "$PLAY_PROVIDER" && test -n "$PLAY_ACCOUNT" || { echo 'DualTouch WIF variables are not configured.' >&2; exit 1; }
+      - uses: google-github-actions/auth@v3
+        id: wif
+        with:
+          workload_identity_provider: ${{ vars.PLAY_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.PLAY_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Read app and track inventory in a temporary uncommitted edit
+        env:
+          PLAY_ACCESS_TOKEN: ${{ steps.wif.outputs.access_token }}
+        run: python3 scripts/release/play_preflight.py check
+      - name: Preserve sanitized preflight report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-play-preflight-${{ github.run_id }}
+          path: play-preflight/report.json
+          if-no-files-found: warn
+          retention-days: 14
