@@ -253,6 +253,9 @@ class TouchMirrorService : AccessibilityService() {
     internal val connectedPair: WindowPair?
         get() = activeWindowPair?.takeIf { isFloatingVisible && approvedAppPair?.matches(it) == true }
 
+    internal val connectedSourceSide: TouchSide get() = sourceSide
+    internal val displayedThumbState: ThumbUiState get() = thumbUiState()
+
     private fun thumbUiState(): ThumbUiState = ThumbUiState.resolve(
         connected = connectedPair != null,
         running = thumbRunning,

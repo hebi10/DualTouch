@@ -142,12 +142,16 @@ internal class ThumbOverlayController(
         }
         menuStateLabel?.let { label ->
             if (label.text.toString() != state.description) label.text = state.description
+            label.setTextColor(if (state.label == "대기" && state.description.startsWith("연결됨")) palette.success else if (state.label == "오류") palette.danger else palette.text)
         }
         menuRunButton?.let { button ->
             val unchanged = menuRunStarts == !runningProvider()
             val label = if (!unchanged) "상태 변경 · 메뉴 다시 열기" else if (menuRunStarts) "실행" else "중지"
             if (button.text.toString() != label) button.text = label
-            if (button.isEnabled != unchanged) button.isEnabled = unchanged
+            if (button.isEnabled != unchanged) {
+                button.isEnabled = unchanged
+                UiKit.styleAction(button, palette, primary = unchanged, danger = unchanged && !menuRunStarts)
+            }
         }
     }
 
@@ -159,7 +163,7 @@ internal class ThumbOverlayController(
         }
         red?.let {
             updateMarkerAppearance(it, appearance.markerSizeDp,
-                appearance.directColor, appearance.markerOpacityPercent, "터치")
+                appearance.directColor, appearance.markerOpacityPercent, "직접")
         }
         white?.let {
             updateMarkerAppearance(it, appearance.markerSizeDp,
@@ -257,12 +261,14 @@ internal class ThumbOverlayController(
         menuStateLabel = TextView(context).apply {
             text = stateProvider().description
             textSize = 14f
-            setTextColor(palette.text)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(if (stateProvider().label == "대기") palette.success else palette.text)
             setPadding(dp(10), dp(8), dp(10), dp(8))
         }.also { column.addView(it) }
         val requestedStart = !runningProvider()
         menuRunStarts = requestedStart
-        menuRunButton = UiKit.action(context, palette, if (requestedStart) "실행" else "중지", primary = false).apply {
+        menuRunButton = UiKit.action(context, palette, if (requestedStart) "실행" else "중지", primary = true).apply {
+            UiKit.styleAction(this, palette, primary = true, danger = !requestedStart)
             setOnClickListener {
                 if (requestedStart != !runningProvider()) {
                     closeMenu()
@@ -406,7 +412,7 @@ internal class ThumbOverlayController(
         }
 
         val a = appearanceSettings.get()
-        red = createMarker(startRed, "터치", a.directColor,
+        red = createMarker(startRed, "직접", a.directColor,
             AppearanceRules.readableTextColor(a.directColor), Color.WHITE)
         white = createMarker(startWhite, "자동", a.automaticColor,
             AppearanceRules.readableTextColor(a.automaticColor), Color.DKGRAY)
@@ -551,7 +557,7 @@ internal class ThumbOverlayController(
                 guideNotice.text = "중앙 기준선 50%로 이동했습니다."
             }
         }
-        addButton(column, "영점 저장") {
+        addButton(column, "영점 저장", primary = true) {
             val current = pairProvider().pair
             val redPoint = red?.let(::center)
             val whitePoint = white?.let(::center)
@@ -815,15 +821,15 @@ internal class ThumbOverlayController(
 
     private fun panel() = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(6), dp(6), dp(6), dp(6))
+        setPadding(dp(10), dp(10), dp(10), dp(10))
         background = GradientDrawable().apply {
             setColor(palette.background)
             setStroke(dp(1), palette.line)
         }
     }
 
-    private fun addButton(parent: LinearLayout, label: String, action: () -> Unit) {
-        UiKit.add(parent, UiKit.action(context, palette, label, primary = false).apply {
+    private fun addButton(parent: LinearLayout, label: String, primary: Boolean = false, action: () -> Unit) {
+        UiKit.add(parent, UiKit.action(context, palette, label, primary = primary).apply {
             setOnClickListener { action() }
         }, topDp = 4)
     }

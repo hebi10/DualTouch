@@ -105,18 +105,24 @@ try:
     tap("내용을 이해하고 계속")
     home = nodes()
     home_text = [node.get("text", "") for node in home.iter("node")]
-    assert any("01 접근성 권한" in value for value in home_text), "Permission progress is missing"
-    assert any("02 플로팅 컨트롤" in value for value in home_text), "Floating progress is missing"
-    assert any("03 분할 앱 연결" in value for value in home_text), "Pair progress is missing"
+    assert "접근성 권한" in home_text and "설정 필요" in home_text, "Permission progress is missing"
+    assert "플로팅 컨트롤" in home_text and "대기" in home_text, "Floating progress is missing"
+    assert "분할 앱 연결" in home_text and "연결 필요" in home_text, "Pair progress is missing"
     capture("phone-02-home-light")
     tap("표시 설정")
     capture("phone-03-settings-light")
+    shell("input", "swipe", "540", "1550", "540", "450", "450")
+    time.sleep(1)
+    capture("phone-03b-settings-scroll-light")
     launch()
     tap("플로팅 표시")
     capture("phone-04-disclosure-light")
     verify_accessibility_settings()
     tap("분할 화면 안내")
     capture("phone-05-guide-light")
+    launch()
+    tap("오류·중지 안내")
+    capture("phone-05b-help-light")
     shell("cmd", "uimode", "night", "yes")
     launch()
     capture("phone-06-home-dark")

@@ -25,6 +25,10 @@ class UiPalette(context: Context) {
     val line = if (dark) 0xFF535353.toInt() else 0xFFD9D9D9.toInt()
     val button = if (dark) 0xFFF0F0F0.toInt() else 0xFF242424.toInt()
     val buttonText = if (dark) 0xFF171717.toInt() else 0xFFFFFFFF.toInt()
+    val success = if (dark) 0xFF86EFAC.toInt() else 0xFF166534.toInt()
+    val warning = if (dark) 0xFFFBBF24.toInt() else 0xFF9A4C00.toInt()
+    val danger = if (dark) 0xFFFCA5A5.toInt() else 0xFFB91C1C.toInt()
+    val stopFill = if (dark) 0xFFB91C1C.toInt() else 0xFFC62828.toInt()
 }
 
 object UiKit {
@@ -122,13 +126,56 @@ object UiKit {
             text = label
             isAllCaps = false
             textSize = 15f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
             minHeight = dp(context, 52)
             setPadding(dp(context, 12), dp(context, 8),
                 dp(context, 12), dp(context, 8))
             setTextColor(if (primary) palette.buttonText else palette.text)
-            background = shape(if (primary) palette.button else palette.background,
-                if (primary) null else palette.line)
+            background = actionBackground(context, palette, primary)
+            stateListAnimator = null
         }
+
+    fun actionBackground(context: Context, palette: UiPalette, primary: Boolean, danger: Boolean = false): android.graphics.drawable.Drawable {
+        val normal = if (danger) palette.stopFill else if (primary) palette.button else palette.background
+        val radius = dp(context, 2).toFloat()
+        val states = android.graphics.drawable.StateListDrawable()
+        states.addState(intArrayOf(-android.R.attr.state_enabled), shape(palette.surface, palette.line, radius))
+        states.addState(intArrayOf(), shape(normal, if (primary || danger) null else palette.line, radius))
+        return states
+    }
+
+    fun styleAction(button: Button, palette: UiPalette, primary: Boolean, danger: Boolean = false) {
+        button.background = actionBackground(button.context, palette, primary, danger)
+        button.setTextColor(if (danger) 0xFFFFFFFF.toInt() else if (primary) palette.buttonText else palette.text)
+        button.stateListAnimator = null
+    }
+
+    fun toolbar(context: Context, palette: UiPalette, title: String, back: (() -> Unit)? = null, trailing: String? = null, onTrailing: (() -> Unit)? = null): LinearLayout {
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = dp(context, 56)
+            if (back != null) {
+                val button = action(context, palette, "‹", false).apply {
+                    contentDescription = "뒤로가기"
+                    textSize = 24f
+                    minimumWidth = dp(context, 48)
+                    minWidth = dp(context, 48)
+                    setOnClickListener { back() }
+                }
+                addView(button, LinearLayout.LayoutParams(dp(context, 48), ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginEnd = dp(context, 12) })
+            }
+            addView(text(context, palette, title, 24f, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (trailing != null && onTrailing != null) {
+                val button = action(context, palette, trailing, false).apply {
+                    textSize = 13f
+                    minimumWidth = dp(context, 48)
+                    setOnClickListener { onTrailing() }
+                }
+                addView(button, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(context, 8) })
+            }
+        }
+    }
 
     fun add(
         parent: LinearLayout,
