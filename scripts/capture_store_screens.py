@@ -29,7 +29,7 @@ def prepare_fixture():
         time.sleep(3)
     time.sleep(5)
 
-def recover_initial_launcher_anr():
+def recover_initial_launcher_anr(activity_dump=None):
     global fixture_launcher_recovered
     if records or fixture_launcher_recovered:
         return False
@@ -42,9 +42,18 @@ def recover_initial_launcher_anr():
     if shell("settings", "get", "secure", "accessibility_enabled").strip() == "1":
         return False
     # Do not dismiss unknown dialogs, app ANRs, consent, or permission prompts.
+    pattern = r"(?m)^\s*mCurrentFocus=Window\{[^\n]*Application Not Responding: com\.google\.android\.apps\.nexuslauncher\}"
     focus = shell("dumpsys", "window", "windows")
-    if not re.search(r"(?m)^\s*mCurrentFocus=Window\{[^\n]*Application Not Responding: com\.google\.android\.apps\.nexuslauncher\}", focus):
-        return False
+    if not re.search(pattern, focus):
+        # The final activity diagnostic in R11 included the exact focus line;
+        # use that bounded final observation as well, never a generic ANR match.
+        if activity_dump is None or not re.search(pattern, activity_dump):
+            return False
+        # Confirm the focused window is still the exact launcher ANR before
+        # acting on the saved observation. Do not use an old screenshot alone.
+        fresh = shell("dumpsys", "activity", "activities")
+        if not re.search(pattern, fresh):
+            return False
     fixture_launcher_recovered = True
     (OUTPUT / "fixture-launcher-anr.png").write_bytes(adb("exec-out", "screencap", "-p"))
     (OUTPUT / "fixture-recovery.json").write_text(json.dumps({
@@ -81,9 +90,14 @@ def nodes():
         except (ET.ParseError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             pass
         time.sleep(2)
+    activity = shell("dumpsys", "activity", "activities")
     (OUTPUT / "diagnostic-screen.png").write_bytes(adb("exec-out", "screencap", "-p"))
-    (OUTPUT / "diagnostic-activity.txt").write_text(shell("dumpsys", "activity", "activities"))
-    (OUTPUT / "diagnostic-crash.txt").write_text(shell("logcat", "-d", "-b", "crash"))
+    (OUTPUT / "diagnostic-activity.txt").write_text(activity, encoding="utf-8")
+    (OUTPUT / "diagnostic-crash.txt").write_text(shell("logcat", "-d", "-b", "crash"), encoding="utf-8")
+    # Preserve the first failure evidence, then permit the existing one-time
+    # guarded launcher recovery if the ANR appeared during the last dump.
+    if recover_initial_launcher_anr(activity_dump=activity):
+        return nodes()
     raise AssertionError("App accessibility root was unavailable after bounded retries")
 
 

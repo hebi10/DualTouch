@@ -126,7 +126,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [countdown, calibration]
+        scenario: [countdown, calibration, home-return]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4

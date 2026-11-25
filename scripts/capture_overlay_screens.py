@@ -7,7 +7,7 @@ import subprocess
 import time
 from pathlib import Path
 
-from overlay_hardware_stop import press_and_release
+from overlay_hardware_stop import press_and_release, observe_guest_volume_events
 
 ROOT = Path("qa/overlay-apk")
 OUT = Path("qa/overlay-screenshots")
@@ -19,10 +19,14 @@ SCENARIO = os.environ["OVERLAY_SCENARIO"]
 SDK_SETUP = "com.google.android.googlesdksetup"
 COMMON = {"DES-06-thumb-ready.png", "DES-07-thumb-menu.png", "DES-08-pair-selection.png"}
 SCENARIO_CAPTURE = {"countdown": "DES-09-thumb-running.png", "calibration": "DES-10-calibration.png"}
-EXPECTED = COMMON | {SCENARIO_CAPTURE[SCENARIO]}
+assert SCENARIO in {"countdown", "calibration", "home-return"}
+EXPECTED = COMMON | ({SCENARIO_CAPTURE[SCENARIO]} if SCENARIO in SCENARIO_CAPTURE else set())
+HOME_EVIDENCE = {"QA-home-after-window-change.png", "QA-home-after-hide.png"}
 ALLOWED = EXPECTED | {"QA-stopped.png", "diagnostic-failure.png",
                       "diagnostic-countdown.png", "diagnostic-calibration.png",
                       "diagnostic-stop-failure.png"}
+if SCENARIO == "home-return":
+    ALLOWED |= HOME_EVIDENCE
 
 
 def adb(*args, timeout=45):
@@ -100,7 +104,9 @@ def send_hardware_volume_down():
                 "press_ok": False, "release_ok": False}
     try:
         serial = adb("get-serialno", timeout=3).decode().strip()
-        evidence.update(press_and_release(serial))
+        command, guest = observe_guest_volume_events(serial, lambda: press_and_release(serial))
+        evidence.update(command)
+        evidence["guest_volume_observation"] = guest
     except Exception as error:
         evidence["transport_error"] = type(error).__name__
     finally:
@@ -126,6 +132,7 @@ def execute_scenario():
             while process.poll() is None:
                 if not requested and marker in stream.read_bytes().splitlines():
                     requested = True
+                    assert SCENARIO in SCENARIO_CAPTURE, "Unexpected hardware stop in idle home scenario"
                     # A transport failure is still a failed stop test, but must
                     # not kill instrumentation before it saves its evidence.
                     command = send_hardware_volume_down()
@@ -169,6 +176,14 @@ def collect():
     assert final_report, "Only partial capture checkpoint recovered"
     assert report["completed"], report.get("error")
     assert verified == EXPECTED, f"Missing actual design states: {EXPECTED - verified}"
+    if SCENARIO == "home-return":
+        captured = {item["file"] for item in report["captures"]}
+        assert HOME_EVIDENCE <= captured, "Missing actual home transition evidence"
+        assert any(item.get("home_return_safe_state_verified") is True and
+                   item.get("original_connected_home_design_verified") is False
+                   for item in report["observations"]), "Safe home transition not verified"
+        assert any(item.get("home_hide_verified") is True for item in report["observations"]), "Floating hide not verified"
+        assert not (verified & HOME_EVIDENCE), "Alternate home state must not count as a connected-design match"
 
 
 failure = None
@@ -204,9 +219,12 @@ try:
     # Copy all verified screenshots before evaluating the stop result.
     collect()
     assert code == 0 and b"INSTRUMENTATION_CODE: -1" in stdout, "Instrumentation did not finish successfully"
-    assert requested, "No hardware stop request was observed"
-    assert command and command["press_ok"] and command["release_ok"], "Emulator hardware-button command failed"
-    assert callbacks == ["volume_down_received", "volume_down_completed input_off=true"], "Real key callback and input release not verified"
+    if SCENARIO == "home-return":
+        assert not requested and not callbacks, "Idle home scenario must not request a hardware stop"
+    else:
+        assert requested, "No hardware stop request was observed"
+        assert command and command["press_ok"] and command["release_ok"], "Emulator hardware-button command failed"
+        assert callbacks == ["volume_down_received", "volume_down_completed input_off=true"], "Real key callback and input release not verified"
 except Exception as error:
     failure = str(error)
     (OUT / "host-failure.json").write_text(json.dumps({

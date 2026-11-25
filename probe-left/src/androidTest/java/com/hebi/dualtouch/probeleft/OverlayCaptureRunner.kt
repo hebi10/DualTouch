@@ -52,7 +52,7 @@ class OverlayCaptureRunner : Instrumentation() {
         try {
             check(Regex("[a-f0-9]{40}").matches(source)) { "Missing exact source SHA" }
             check(targetContext.packageName == LEFT)
-            check(scenario in setOf("countdown", "calibration")) { "Unknown scenario" }
+            check(scenario in setOf("countdown", "calibration", "home-return")) { "Unknown scenario" }
             automation = checkNotNull(getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES))
             val info = checkNotNull(automation.serviceInfo)
             val observerOriginallyRequestedKeys =
@@ -590,6 +590,92 @@ class OverlayCaptureRunner : Instrumentation() {
     private fun capturesContains(filename: String): Boolean =
         (0 until captures.length()).any { captures.getJSONObject(it).optString("file") == filename }
 
+    private fun recordKeyFilterConfiguration() {
+        // Read only enabled-service metadata. Do not record other service IDs
+        // or change their flags. Enabled metadata is not proof of dispatch.
+        runCatching {
+            val manager = targetContext.getSystemService(android.view.accessibility.AccessibilityManager::class.java)
+                ?: error("AccessibilityManager unavailable")
+            val enabled = manager.getEnabledAccessibilityServiceList(
+                AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+            )
+            val own = enabled.filter { it.resolveInfo?.serviceInfo?.packageName == APP }
+            val flag = AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS
+            val capability = AccessibilityServiceInfo.CAPABILITY_CAN_REQUEST_FILTER_KEY_EVENTS
+            observations.put(JSONObject().put("key_filter_metadata",
+                JSONObject().put("controller_enabled_count", own.size)
+                    .put("controller_requests_filter", own.any { (it.flags and flag) != 0 })
+                    .put("controller_has_filter_capability", own.any { (it.capabilities and capability) != 0 })
+                    .put("other_enabled_filter_requests", enabled.count {
+                        it.resolveInfo?.serviceInfo?.packageName != APP && (it.flags and flag) != 0
+                    })
+                    .put("observer_requests_filter", (checkNotNull(automation.serviceInfo).flags and flag) != 0)))
+        }.onFailure {
+            observations.put(JSONObject().put("key_filter_metadata_unavailable", true))
+        }
+    }
+
+    private fun homeAfterWindowChangeVisible(): Boolean {
+        if (activeApplicationPackage() != APP || splitVisible()) return false
+        val nodes = visibleNodes().filter { it.pkg == APP }
+        val texts = nodes.map { it.text }
+        return "현재 상태" in texts && "분할 앱 연결" in texts &&
+            "연결 필요" in texts && "연결됨 · 실행 대기" !in texts &&
+            texts.none { it == LEFT || it == RIGHT || it.endsWith("직접 → 오른쪽 자동") ||
+                it.endsWith("직접 → 왼쪽 자동") || it.endsWith("직접 → 위쪽 자동") ||
+                it.endsWith("직접 → 아래쪽 자동") } &&
+            nodes.none { it.description.startsWith("DualTouch Thumb.") &&
+                it.description.contains("실행 중") }
+    }
+
+    private fun controllerOverlayRemoved(): Boolean =
+        automation.windows.none { window ->
+            if (window.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) false
+            else {
+                val root = window.getRoot(0)
+                try { root == null || root.packageName?.toString() == APP }
+                finally { root?.recycle() }
+            }
+        }
+
+    private fun captureHomeReturn() {
+        // This is a separate idle scenario. Never start mirroring, and never
+        // keep a stale approval just to reproduce the original DES-04 draft.
+        stage = "home-return / close ready menu"
+        tap(thumb("대기"))
+        waitFor("closed ready menu") {
+            visibleNodes().none { it.pkg == APP && it.text == "좌/우 선택 · 앱 연결" }
+        }
+        requireSplit()
+        stage = "home-return / actual window change"
+        returnToControllerHome()
+        waitFor("actual home without a stale approved pair", 15000) { homeAfterWindowChangeVisible() }
+        SystemClock.sleep(500)
+        check(homeAfterWindowChangeVisible()) { "Home state changed before capture" }
+        screenshot("QA-home-after-window-change",
+            "actual controller home after leaving approved split; not connected-home draft", false)
+        check(homeAfterWindowChangeVisible()) { "Home state changed after capture" }
+        observations.put(JSONObject().put("home_return_safe_state_verified", true)
+            .put("original_connected_home_design_verified", false))
+        stage = "home-return / hide floating"
+        val labels = visibleNodes().filter { it.pkg == APP }.map { it.text }
+        if ("플로팅 숨기기" in labels) {
+            tapWithScroll(APP, "플로팅 숨기기")
+            observations.put(JSONObject().put("hide_action_used", true))
+        } else {
+            check("플로팅 표시" in labels && controllerOverlayRemoved()) { "Hide state is unavailable" }
+            observations.put(JSONObject().put("hide_action_used", false))
+        }
+        waitFor("home after floating control removed") {
+            activeApplicationPackage() == APP && controllerOverlayRemoved() &&
+                visibleNodes().any { it.pkg == APP && it.text == "플로팅 표시" } &&
+                homeAfterWindowChangeVisible()
+        }
+        screenshot("QA-home-after-hide", "actual idle home; controller overlay removed", false)
+        check(controllerOverlayRemoved() && homeAfterWindowChangeVisible()) { "Hidden state changed" }
+        observations.put(JSONObject().put("home_hide_verified", true))
+    }
+
     private fun stopScenario(name: String) {
         stage = "$name / emergency stop"
         // Never start another scenario until the controller and any armed input
@@ -606,6 +692,7 @@ class OverlayCaptureRunner : Instrumentation() {
                 "Countdown is no longer active before the hardware key"
             }
         }
+        recordKeyFilterConfiguration()
         checkpoint()
         // The host sends one emulator hardware-button press/release when this
         // instrumentation status arrives. A shell-injected key is not used as
@@ -645,6 +732,10 @@ class OverlayCaptureRunner : Instrumentation() {
         stage = "real split"
         openSplit()
         connectAndOpenReadyMenu(captureDesigns = true)
+        if (scenario == "home-return") {
+            captureHomeReturn()
+            return
+        }
 
         val errors = mutableListOf<String>()
         try {

@@ -56,3 +56,60 @@ def press_and_release(serial, run=subprocess.run, sleep=time.sleep):
     evidence["press_ok"] = evidence["press"]["accepted"]
     evidence["release_ok"] = evidence["release"]["accepted"]
     return evidence
+
+
+def classify_guest_volume_events(returncode, output, observer_started=True):
+    """Return only fixed-key counts, never store the raw device event stream.
+
+    An empty/partial stream is inconclusive; getevent may be unavailable to
+    the unprivileged shell or may not see the emulator's injection route.
+    """
+    lines = output.splitlines()
+    down = sum(bool(re.search(r"\bEV_KEY\s+KEY_VOLUMEDOWN\s+(?:DOWN|00000001)\s*$", line))
+               for line in lines)
+    up = sum(bool(re.search(r"\bEV_KEY\s+KEY_VOLUMEDOWN\s+(?:UP|00000000)\s*$", line))
+             for line in lines)
+    unavailable = (not observer_started or any(
+        re.search(r"permission denied|could not open|cannot open|not found|inaccessible",
+                  line, re.IGNORECASE) for line in lines))
+    if down or up:
+        outcome = "volume_event_observed"
+    elif unavailable or returncode not in (0, 124, 137, 143):
+        outcome = "observer_unavailable"
+    else:
+        outcome = "not_observed_in_available_stream"
+    return {"outcome": outcome, "down_count": down, "up_count": up,
+            "observer_exit_code": returncode, "observation_incomplete": unavailable}
+
+
+def observe_guest_volume_events(serial, send, popen=subprocess.Popen, sleep=time.sleep):
+    """Observe one existing stop request without changing device permissions."""
+    if not re.fullmatch(r"emulator-\d+", serial):
+        raise ValueError("Disposable emulator console required")
+    process = None
+    started = False
+    raw = b""
+    code = None
+    try:
+        # Bounded, read-only trace on the CI fixture. No adb root or permission
+        # changes, and no raw event output is persisted or printed.
+        process = popen(["adb", "-s", serial, "shell", "timeout", "3", "getevent", "-lt"],
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        sleep(0.2)
+        started = process.poll() is None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        command = send()
+    finally:
+        if process is not None:
+            try:
+                raw, _ = process.communicate(timeout=4)
+                code = process.returncode
+            except subprocess.TimeoutExpired:
+                process.kill()
+                raw, _ = process.communicate()
+                code = process.returncode
+                started = False
+    return command, classify_guest_volume_events(
+        code, raw.decode("utf-8", errors="replace"), started)
