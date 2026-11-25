@@ -218,4 +218,38 @@ class AppPairPolicyTest {
         assertEquals(SafetyIssue.PAIR_CHANGED,
             verify(listOf(apps.first(), apps.last().copy(windowId = 42)), approval).issue)
     }
+
+    @Test fun deadlineSkippedIdentityIsTimeoutAndNeverApproves() {
+        val (first, second) = pair()
+        val windows = listOf(first, second.copy(packageName = null,
+            inputInspection = InputInspection.TIME_BUDGET_EXCEEDED))
+        val result = select(windows)
+        assertEquals(SafetyIssue.INPUT_INSPECTION_TIMEOUT, result.issue)
+        assertFalse(result.allowed)
+        assertEquals(null, result.pair)
+        val approval = AppPairApproval.fromPair(select(pair()).pair!!)
+        assertFalse(verify(windows, approval).allowed)
+    }
+
+    @Test fun actuallyMissingIdentityRemainsIncompleteEvenWithAnotherTimeout() {
+        val (first, second) = pair()
+        val result = select(listOf(
+            first.copy(packageName = null, inputInspection = InputInspection.UNAVAILABLE),
+            second.copy(packageName = null, inputInspection = InputInspection.TIME_BUDGET_EXCEEDED)
+        ))
+        assertEquals(SafetyIssue.INPUT_INSPECTION_INCOMPLETE, result.issue)
+        assertFalse(result.allowed)
+    }
+
+    @Test fun timeoutNeverOverridesKnownProtectedOrSensitiveApplication() {
+        val (first, second) = pair()
+        val timedOut = second.copy(packageName = null,
+            inputInspection = InputInspection.TIME_BUDGET_EXCEEDED)
+        val protected = select(listOf(first.copy(packageName = owner), timedOut))
+        assertEquals(SafetyIssue.PROTECTED_APP, protected.issue)
+        assertFalse(protected.allowed)
+        val sensitive = select(listOf(first.copy(inputInspection = InputInspection.SENSITIVE), timedOut))
+        assertEquals(SafetyIssue.SENSITIVE_INPUT, sensitive.issue)
+        assertFalse(sensitive.allowed)
+    }
 }

@@ -76,13 +76,26 @@ object AppPairPolicy {
         if (apps.any { it.pictureInPicture }) return SafetyAssessment(null, SafetyIssue.PICTURE_IN_PICTURE)
         if (apps.size > 2) return SafetyAssessment(null, SafetyIssue.EXTRA_APPLICATION_WINDOWS)
         if (apps.size != 2) return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
-        if (apps.any { it.packageName.isNullOrBlank() }) {
+        // A root not queried before the read deadline is a timeout, not a
+        // confirmed missing identity. Neither state may authorize a pair.
+        if (apps.any {
+                it.packageName.isNullOrBlank() &&
+                    it.inputInspection != InputInspection.TIME_BUDGET_EXCEEDED
+            }) {
             return SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_INCOMPLETE)
         }
-        if (apps.any { isProtectedPackage(it.packageName!!, controllerPackage) }) {
+        if (apps.any { app ->
+                app.packageName?.takeIf { it.isNotBlank() }?.let {
+                    isProtectedPackage(it, controllerPackage)
+                } == true
+            }) {
             return SafetyAssessment(null, SafetyIssue.PROTECTED_APP)
         }
         WindowSafetyPolicy.inputIssue(apps)?.let { return SafetyAssessment(null, it) }
+        // Retain an explicit final identity check for every accepted snapshot.
+        if (apps.any { it.packageName.isNullOrBlank() }) {
+            return SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_INCOMPLETE)
+        }
         if (apps.any { it.windowId < 0 } || apps[0].windowId == apps[1].windowId) {
             return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
         }
