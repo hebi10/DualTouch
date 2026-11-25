@@ -366,14 +366,25 @@ class OverlayCaptureRunner : Instrumentation() {
             "DES-07-thumb-menu" -> text("실행") && text("좌/우 선택 · 앱 연결") && text("영점 조절") && nodes.any { it.text.startsWith("연결됨 · 실행 대기") }
             "DES-08-pair-selection" -> text("현재 분할 앱 연결") && nodes.any { it.text.contains(LEFT) } && nodes.any { it.text.contains(RIGHT) } && nodes.any { it.text.endsWith("자동 연결") }
             "DES-09-thumb-running" -> thumb != null && Regex("(?:[1-9]|1[0-9]|20)초").matches(thumb.text) && thumb.description.contains("실행 중")
-            "DES-10-calibration" -> text("직접") && text("자동") && nodes.any { it.text.startsWith("중앙 기준선 위치:") }
+            "DES-10-calibration" -> text("영점 조절") &&
+                nodes.any { it.text == "직접" && it.description.startsWith("직접 터치 보정점") } &&
+                nodes.any { it.text == "자동" && it.description.startsWith("자동 터치 보정점") } &&
+                nodes.any { it.text.startsWith("중앙 기준선 위치:") } &&
+                nodes.none { it.text == "오류" && it.description.startsWith("DualTouch Thumb.") }
             else -> false
         }
         check(valid) { "Actual UI no longer matches $name" }
     }
 
     private fun screenshot(name: String, state: String, designMatch: Boolean = true) {
-        if (designMatch) verifyDesignState(name)
+        if (designMatch) {
+            verifyDesignState(name)
+            // Accessibility state can be published before the corresponding
+            // Surface frame is drawn. Require a second valid sample after a
+            // render interval; visual review is still needed for pixel state.
+            if (name != "DES-09-thumb-running") SystemClock.sleep(500L)
+            verifyDesignState(name)
+        }
         val image = checkNotNull(automation.takeScreenshot()) { "Screenshot unavailable" }
         val file = File(output, "$name.png")
         val width = image.width
@@ -511,10 +522,22 @@ class OverlayCaptureRunner : Instrumentation() {
         screenshot("DES-07-thumb-menu", "approved pair; three actions")
 
         stage = "calibration"
+        recordOverlayInventory("before_calibration")
         tapText(APP, "영점 조절")
-        awaitNode("direct reference") { it.pkg == APP && it.text == "직접" && it.description.startsWith("직접 터치 보정점") }
+        val calibrationResult = awaitNode("calibration entry outcome", 15000) {
+            it.pkg == APP && (
+                it.text == "직접" && it.description.startsWith("직접 터치 보정점") ||
+                it.text == "오류" && it.description.startsWith("DualTouch Thumb.")
+            )
+        }
+        if (calibrationResult.text == "오류") {
+            recordOverlayInventory("calibration_entry_blocked")
+            error("Calibration blocked: " + calibrationResult.description)
+        }
         awaitNode("automatic reference") { it.pkg == APP && it.text == "자동" && it.description.startsWith("자동 터치 보정점") }
         awaitNode("guide position") { it.pkg == APP && it.text.startsWith("중앙 기준선 위치:") }
+        awaitNode("calibration title") { it.pkg == APP && it.text == "영점 조절" }
+        recordOverlayInventory("calibration_visible")
         requireSplit()
         screenshot("DES-10-calibration", "real calibration overlay; both reference markers")
         tapText(APP, "취소")

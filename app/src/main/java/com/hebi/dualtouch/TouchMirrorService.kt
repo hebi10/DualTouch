@@ -217,9 +217,15 @@ class TouchMirrorService : AccessibilityService() {
         return SafetyIssue.NONE
     }
 
-    private fun prepareCalibration() {
-        setThumbRunning(false)
-        setCapture(false)
+    private fun prepareCalibration(): SafetyIssue {
+        if (!armed || mode != MirrorMode.THUMB) return SafetyIssue.UNAPPROVED_PAIR
+        if (captureFaulted || !environmentAllowsInput()) return SafetyIssue.CAPTURE_UNAVAILABLE
+        val stopped = setThumbRunning(false)
+        if (stopped != SafetyIssue.NONE) return stopped
+        if (!setCapture(false)) return SafetyIssue.CAPTURE_UNAVAILABLE
+        if (gestureFlight.pending) return if (gestureFlight.expired)
+            SafetyIssue.INPUT_RECOVERY_REQUIRED else SafetyIssue.INPUT_FINISHING
+        return SafetyIssue.NONE
     }
 
     private fun setMenuVisible(visible: Boolean) {
