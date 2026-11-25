@@ -70,6 +70,13 @@ data class SafetyAssessment(
 }
 
 object WindowSafetyPolicy {
+    // A completed tree traversal does not authorize input after the complete
+    // window-read budget has elapsed. Preserve actual unsafe/incomplete
+    // reasons rather than labeling them as retryable timeout failures.
+    internal fun enforceReadDeadline(assessment: SafetyAssessment, expired: Boolean): SafetyAssessment =
+        if (expired && assessment.allowed) SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_TIMEOUT)
+        else assessment
+
     private val allowedPackages = setOf(TestPackages.LEFT, TestPackages.RIGHT)
 
     fun inspect(

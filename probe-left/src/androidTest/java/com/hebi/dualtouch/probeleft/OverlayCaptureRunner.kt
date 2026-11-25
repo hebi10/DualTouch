@@ -329,6 +329,80 @@ class OverlayCaptureRunner : Instrumentation() {
         }
     }
 
+    // The Settings list may move after a scroll. Resolve the current native
+    // row by exact label and invoke its real click action, rather than tap a
+    // previously observed coordinate that may now belong to another row.
+    private fun clickSettingsControl(labels: Set<String>): Boolean {
+        if (activeApplicationPackage() != SETTINGS) return false
+
+        fun clickRow(node: AccessibilityNodeInfo): Boolean {
+            var current: AccessibilityNodeInfo? = node
+            var ownsCurrent = false
+            try {
+                repeat(6) {
+                    val item = current ?: return false
+                    if (item.packageName?.toString() != SETTINGS ||
+                        !item.isVisibleToUser || !item.isEnabled) return false
+                    if (item.isClickable && item.actionList.any {
+                        it.id == AccessibilityNodeInfo.ACTION_CLICK
+                    }) {
+                        return item.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    }
+                    val parent = item.parent
+                    if (ownsCurrent) item.recycle()
+                    current = parent
+                    ownsCurrent = parent != null
+                }
+                return false
+            } finally {
+                if (ownsCurrent) current?.recycle()
+            }
+        }
+
+        fun visit(node: AccessibilityNodeInfo, depth: Int): Boolean {
+            if (depth > 40) return false
+            if (node.packageName?.toString() == SETTINGS && node.isVisibleToUser &&
+                node.text?.toString() in labels && clickRow(node)) return true
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i) ?: continue
+                try { if (visit(child, depth + 1)) return true } finally { child.recycle() }
+            }
+            return false
+        }
+        for (window in automation.windows) {
+            if (window.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+            val root = window.root ?: continue
+            try {
+                if (root.packageName?.toString() == SETTINGS && visit(root, 0)) return true
+            } finally { root.recycle() }
+        }
+        return false
+    }
+
+    private fun openActualServiceDetails() {
+        val services = setOf("DualTouch 실험 서비스", "DualTouch POC")
+        val categories = setOf("Downloaded apps", "Installed apps", "Installed services",
+            "설치된 앱", "설치된 서비스", "다운로드한 앱")
+        var categoryOpened = false
+        repeat(8) { attempt ->
+            check(activeApplicationPackage() == SETTINGS) { "Android Settings is not foreground" }
+            if (clickSettingsControl(services)) {
+                observations.put(JSONObject().put("system_service_row_action_accepted", true))
+                return
+            }
+            if (!categoryOpened && clickSettingsControl(categories)) {
+                categoryOpened = true
+                observations.put(JSONObject().put("system_service_category_action_accepted", true))
+                SystemClock.sleep(900)
+            } else if (attempt < 7) {
+                observations.put(JSONObject().put("system_service_search_attempt", attempt + 1)
+                    .put("scroll_action_accepted", scrollForward(SETTINGS)))
+                SystemClock.sleep(600)
+            }
+        }
+        error("Exact DualTouch service row could not be opened through Android Settings")
+    }
+
     private fun configureService() {
         stage = "permission flow / onboarding"
         startApp(APP, ".MainActivity")
@@ -343,29 +417,23 @@ class OverlayCaptureRunner : Instrumentation() {
         // Traverse the real system Settings UI, including its confirmation.
         // No settings-put, run-as preference writes, or direct service activation.
         stage = "permission flow / system service list"
-        fun isServiceEntry(node: VisibleNode) =
-            node.text in setOf("DualTouch 실험 서비스", "DualTouch POC")
-        val entry = awaitWithScroll(SETTINGS, "DualTouch or installed accessibility services") {
-            isServiceEntry(it) || it.text in setOf(
-                "Downloaded apps", "Installed apps", "Installed services",
-                "설치된 앱", "설치된 서비스", "다운로드한 앱",
+        waitFor("Android accessibility Settings foreground") { activeApplicationPackage() == SETTINGS }
+        openActualServiceDetails()
+        stage = "permission flow / system toggle"
+        // Confirm that the service-specific screen opened before scrolling;
+        // a category header or a failed navigation is not an enabled service.
+        val toggle = awaitNode("DualTouch service-specific switch", 12000) {
+            it.pkg == SETTINGS && (
+                it.text.startsWith("Use DualTouch") ||
+                it.text.startsWith("DualTouch 실험 서비스 사용")
             )
         }
-        if (isServiceEntry(entry)) tap(entry) else {
-            tap(entry)
-            tap(awaitWithScroll(SETTINGS, "DualTouch service list entry", ::isServiceEntry))
-        }
-        stage = "permission flow / system toggle"
-        val toggle = awaitWithScroll(SETTINGS, "service switch") {
-            it.text.startsWith("Use DualTouch") ||
-                it.text.startsWith("DualTouch 실험 서비스 사용") ||
-                it.text == "Use service" || it.text == "서비스 사용"
-        }
-        tap(toggle)
+        check(clickSettingsControl(setOf(toggle.text))) { "Actual service switch action was rejected" }
         stage = "permission flow / system confirmation"
-        tap(awaitNode("system permission confirmation") {
+        val consent = awaitNode("system permission confirmation") {
             it.pkg == SETTINGS && it.text in setOf("Allow", "OK", "허용", "확인")
-        })
+        }
+        check(clickSettingsControl(setOf(consent.text))) { "Actual system confirmation action was rejected" }
         waitFor("system accessibility service enabled") { serviceEnabledInSettings() }
         observations.put(JSONObject().put("system_service_enabled_after_confirmation", true))
         stage = "permission flow / return from Settings"

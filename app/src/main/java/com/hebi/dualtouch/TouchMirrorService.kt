@@ -179,7 +179,10 @@ class TouchMirrorService : AccessibilityService() {
     private fun candidateAppPair(): SafetyAssessment {
         val environment = readWindowEnvironment()
             ?: return SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_INCOMPLETE)
-        return AppPairPolicy.select(environment.first.map { it.metadata }, packageName, environment.second)
+        val assessment = AppPairPolicy.select(
+            environment.windows.map { it.metadata }, packageName, environment.workArea
+        )
+        return WindowSafetyPolicy.enforceReadDeadline(assessment, environment.expired)
     }
 
     private fun connectVisibleApps(side: TouchSide, displayedPair: AppPairApproval): SafetyIssue {
@@ -188,8 +191,11 @@ class TouchMirrorService : AccessibilityService() {
         if (gestureFlight.pending) return if (gestureFlight.expired) SafetyIssue.INPUT_RECOVERY_REQUIRED else SafetyIssue.INPUT_FINISHING
         val environment = readWindowEnvironment()
             ?: return SafetyIssue.INPUT_INSPECTION_INCOMPLETE
-        val assessment = AppPairPolicy.verify(
-            environment.first.map { it.metadata }, packageName, environment.second, displayedPair,
+        val assessment = WindowSafetyPolicy.enforceReadDeadline(
+            AppPairPolicy.verify(
+                environment.windows.map { it.metadata }, packageName, environment.workArea, displayedPair,
+            ),
+            environment.expired,
         )
         val pair = assessment.pair
         if (!assessment.allowed || pair == null) {
@@ -929,7 +935,13 @@ class TouchMirrorService : AccessibilityService() {
         return try { block() } finally { add(phase, SystemClock.uptimeMillis() - start) }
     }
 
-    private fun readWindowEnvironment(): Pair<List<ReadWindow>, SplitWorkArea>? {
+    private data class ReadEnvironment(
+        val windows: List<ReadWindow>,
+        val workArea: SplitWorkArea,
+        val expired: Boolean,
+    )
+
+    private fun readWindowEnvironment(): ReadEnvironment? {
         val started = SystemClock.uptimeMillis()
         val deadline = started + INSPECTION_BUDGET_MS
         val timing = if (inspectionDiagnosticsEnabled) InspectionTiming() else null
@@ -940,7 +952,9 @@ class TouchMirrorService : AccessibilityService() {
             val treeTimedOut = snapshot.any { it.metadata.inputInspection == InputInspection.TIME_BUDGET_EXCEEDED }
             val overBudget = SystemClock.uptimeMillis() >= deadline
             outcome = if (treeTimedOut || overBudget) "timeout" else "complete"
-            if (overBudget && !treeTimedOut) null else snapshot to workArea
+            // Still evaluate the existing policy to preserve definite unsafe
+            // reasons. No expired read may produce an authorized pair.
+            ReadEnvironment(snapshot, workArea, treeTimedOut || overBudget)
         } catch (_: RuntimeException) {
             null
         } finally {
@@ -1035,13 +1049,15 @@ class TouchMirrorService : AccessibilityService() {
         }
         val environment = readWindowEnvironment()
             ?: return WindowInspection(SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_INCOMPLETE), emptyList(), emptyList())
-        val (snapshots, workArea) = environment
+        val (snapshots, workArea, expired) = environment
         val visible = snapshots.map { it.metadata }
-        val assessment = if (mode == MirrorMode.THUMB) {
+        val assessed = if (mode == MirrorMode.THUMB) {
             AppPairPolicy.verify(visible, packageName, workArea, approvedAppPair)
         } else {
             WindowSafetyPolicy.inspect(visible, packageName, workArea)
         }
+        val assessment = WindowSafetyPolicy.enforceReadDeadline(assessed, expired)
+        if (expired) return WindowInspection(assessment, emptyList(), emptyList())
         return WindowInspection(assessment, snapshots, visible)
     }
 
