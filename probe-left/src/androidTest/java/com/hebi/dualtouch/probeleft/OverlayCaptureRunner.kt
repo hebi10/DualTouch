@@ -58,6 +58,12 @@ class OverlayCaptureRunner : Instrumentation() {
         } catch (failure: Exception) {
             error = "$stage: ${failure.message ?: failure.javaClass.simpleName}"
             if (::automation.isInitialized) {
+                runCatching {
+                    observations.put(JSONObject().put("failed_stage", stage)
+                        .put("fixture_visible_labels", JSONArray(visibleNodes()
+                            .filter { it.pkg in setOf(APP, SETTINGS, LEFT, RIGHT) }
+                            .map { it.text }.filter { it.isNotBlank() }.distinct().take(60))))
+                }
                 runCatching { screenshot("diagnostic-failure", "diagnostic only; not a design match", false) }
             }
         } finally {
@@ -135,6 +141,50 @@ class OverlayCaptureRunner : Instrumentation() {
 
     private fun tapText(pkg: String, value: String) = tap(awaitNode(value) { it.pkg == pkg && it.text == value })
 
+    // Use only an actual scrollable widget in the expected package, before enabling
+    // touch mirroring. This avoids blind swipes or injected app preference changes.
+    private fun scrollForward(pkg: String): Boolean {
+        fun scroll(node: AccessibilityNodeInfo, depth: Int): Boolean {
+            if (depth > 40) return false
+            if (node.packageName?.toString() == pkg && node.isVisibleToUser &&
+                node.isScrollable && node.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)) {
+                return true
+            }
+            for (i in 0 until node.childCount) {
+                val child = node.getChild(i) ?: continue
+                try { if (scroll(child, depth + 1)) return true } finally { child.recycle() }
+            }
+            return false
+        }
+        for (window in automation.windows) {
+            if (window.type != AccessibilityWindowInfo.TYPE_APPLICATION) continue
+            val root = window.root ?: continue
+            try {
+                if (root.packageName?.toString() == pkg && scroll(root, 0)) return true
+            } finally { root.recycle() }
+        }
+        return false
+    }
+
+    private fun awaitWithScroll(pkg: String, description: String, predicate: (VisibleNode) -> Boolean): VisibleNode {
+        repeat(8) { attempt ->
+            val found = runCatching {
+                awaitNode(description, 1800) { it.pkg == pkg && predicate(it) }
+            }.getOrNull()
+            if (found != null) return found
+            if (attempt < 7) {
+                val moved = scrollForward(pkg)
+                observations.put(JSONObject().put("scroll_stage", stage)
+                    .put("attempt", attempt + 1).put("scroll_action_accepted", moved))
+                SystemClock.sleep(500)
+            }
+        }
+        error("Control not visible after bounded scroll: $description")
+    }
+
+    private fun tapWithScroll(pkg: String, value: String) =
+        tap(awaitWithScroll(pkg, value) { it.text == value })
+
     private fun thumb(label: String) = awaitNode("Thumb $label") {
         it.pkg == APP && it.text == label && it.description.startsWith("DualTouch Thumb.")
     }
@@ -189,7 +239,8 @@ class OverlayCaptureRunner : Instrumentation() {
             // Some emulator builds expose a test-only WMShell command.
             // Discover its availability before using it; never alter app safety state.
             startApp(LEFT, PROBE_ACTIVITY)
-            val help = shell("$WMSHELL help")
+            val help = shell("$WMSHELL help") + "\n" + shell("$WMSHELL splitscreen help")
+            observations.put(JSONObject().put("wmshell_move_to_side_stage_available", help.contains("moveToSideStage")))
             if (help.contains("moveToSideStage")) {
                 val id = taskId(RIGHT)
                 shell("$WMSHELL splitscreen moveToSideStage $id 1")
@@ -202,25 +253,35 @@ class OverlayCaptureRunner : Instrumentation() {
     }
 
     private fun configureService() {
+        stage = "permission flow / onboarding"
         startApp(APP, ".MainActivity")
-        tapText(APP, "내용을 이해하고 계속")
-        tapText(APP, "접근성 권한 설정")
+        tapWithScroll(APP, "내용을 이해하고 계속")
+        stage = "permission flow / disclosure"
+        tapWithScroll(APP, "접근성 권한 설정")
         tapText(APP, "동의하고 설정 열기")
         // Traverse the real system Settings UI, including its confirmation.
         // No settings-put, run-as preference writes, or direct service activation.
-        val service = runCatching { awaitNode("DualTouch service list entry", 3500) {
-            it.pkg == SETTINGS && it.text == "DualTouch 실험 서비스"
-        } }.getOrElse {
-            tap(awaitNode("installed accessibility apps") {
-                it.pkg == SETTINGS && it.text in setOf("Downloaded apps", "Installed apps", "Installed services", "설치된 앱", "다운로드한 앱")
-            })
-            awaitNode("DualTouch service list entry") { it.pkg == SETTINGS && it.text == "DualTouch 실험 서비스" }
+        stage = "permission flow / system service list"
+        fun isServiceEntry(node: VisibleNode) =
+            node.text in setOf("DualTouch 실험 서비스", "DualTouch POC")
+        val entry = awaitWithScroll(SETTINGS, "DualTouch or installed accessibility services") {
+            isServiceEntry(it) || it.text in setOf(
+                "Downloaded apps", "Installed apps", "Installed services",
+                "설치된 앱", "설치된 서비스", "다운로드한 앱",
+            )
         }
-        tap(service)
-        val toggle = awaitNode("service switch") {
-            it.pkg == SETTINGS && (it.text.startsWith("Use DualTouch") || it.text.startsWith("DualTouch 실험 서비스 사용") || it.text == "Use service")
+        if (isServiceEntry(entry)) tap(entry) else {
+            tap(entry)
+            tap(awaitWithScroll(SETTINGS, "DualTouch service list entry", ::isServiceEntry))
+        }
+        stage = "permission flow / system toggle"
+        val toggle = awaitWithScroll(SETTINGS, "service switch") {
+            it.text.startsWith("Use DualTouch") ||
+                it.text.startsWith("DualTouch 실험 서비스 사용") ||
+                it.text == "Use service" || it.text == "서비스 사용"
         }
         tap(toggle)
+        stage = "permission flow / system confirmation"
         tap(awaitNode("system permission confirmation") {
             it.pkg == SETTINGS && it.text in setOf("Allow", "OK", "허용", "확인")
         })
@@ -228,9 +289,10 @@ class OverlayCaptureRunner : Instrumentation() {
             val enabled = shell("settings get secure enabled_accessibility_services")
             enabled.split(':').any { it.trim() == SERVICE || it.trim() == "$APP/$APP.TouchMirrorService" }
         }
+        stage = "permission flow / show Thumb"
         startApp(APP, ".MainActivity")
         awaitNode("connected permission on home") { it.pkg == APP && it.text == "연결됨" }
-        tapText(APP, "플로팅 표시")
+        tapWithScroll(APP, "플로팅 표시")
         thumb("연결")
     }
 
