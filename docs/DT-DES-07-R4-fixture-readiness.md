@@ -1,0 +1,7 @@
+# DT-DES-07-R4 — Stabilize isolated emulator fixture before overlay capture
+
+R3 CI 45545053956: build/test and ordinary screen capture jobs passed. Overlay capture failed during onboarding, before service permission, split approval, or input execution. The diagnostic screenshot and report show a Google SDK setup process ANR (com.google.android.googlesdksetup) covering DualTouch. Seven scroll attempts were rejected; the controller was not the foreground app. This is an environment failure, not evidence that R3's bounded inspection optimization passed or failed at runtime.
+
+Correction is limited to CI scripts and optional probe androidTest. Require GitHub Actions and an emulator; wait for sys.boot_completed, device_provisioned and user_setup_complete. After all three are confirmed, stop only the known SDK setup process if present, without disabling packages or writing any setting, then recheck readiness. If setup remains incomplete, report a fixture failure rather than force setup completion. Require actual DualTouch foreground before onboarding controls. Preserve the separate fixture-readiness report and existing diagnostic evidence.
+
+No production code change, permission bypass, automatic approval, or relaxation of the 500ms/256-node safety budget. R3 inspection optimization still requires actual split approval and input safety verification. DES-06~10 valid captures remain unavailable. DES-04 remains subject to actual window-approval feasibility. No merge, signing or Play release.

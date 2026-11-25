@@ -302,6 +302,10 @@ class OverlayCaptureRunner : Instrumentation() {
     private fun configureService() {
         stage = "permission flow / onboarding"
         startApp(APP, ".MainActivity")
+        waitFor("DualTouch foreground before onboarding", 15000) {
+            activeApplicationPackage() == APP && visibleNodes().any { it.pkg == APP }
+        }
+        observations.put(JSONObject().put("onboarding_foreground_verified", true))
         tapWithScroll(APP, "내용을 이해하고 계속")
         stage = "permission flow / disclosure"
         tapWithScroll(APP, "접근성 권한 설정")
