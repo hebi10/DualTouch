@@ -11,13 +11,27 @@ on:
         type: boolean
         required: true
         default: false
+  workflow_call:
+    inputs:
+      expected_main_sha:
+        type: string
+        required: true
+      approved:
+        type: boolean
+        required: true
+      expected_version_code:
+        type: string
+        required: true
+    secrets:
+      DUALTOUCH_SIGNING_BUNDLE_BASE64:
+        required: true
 
 permissions:
   contents: read
   actions: read
 
 concurrency:
-  group: dualtouch-play-release
+  group: ${{ inputs.expected_version_code && format('dualtouch-ops09-signing-{0}', github.run_id) || 'dualtouch-play-release' }}
   cancel-in-progress: false
 
 env:
@@ -42,6 +56,14 @@ jobs:
         with:
           ref: ${{ env.CANDIDATE_SHA }}
           persist-credentials: false
+      - name: Confirm approved source version for OPS-09
+        if: inputs.expected_version_code
+        env:
+          EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+          RELEASE_APPROVED: ${{ inputs.approved }}
+          EXPECTED_VERSION_CODE: ${{ inputs.expected_version_code }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/release.py internal-qa-guard
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -63,6 +85,8 @@ jobs:
           DUALTOUCH_SIGNING_BUNDLE_BASE64: ${{ secrets.DUALTOUCH_SIGNING_BUNDLE_BASE64 }}
         run: python3 scripts/release/release.py restore
       - name: Sign and independently verify the QA AAB
+        env:
+          OPS09_VERSION_CODE: ${{ inputs.expected_version_code }}
         run: |
           test "$(git rev-parse HEAD)" = "$CANDIDATE_SHA"
           gradle --no-daemon :app:bundleRelease --max-workers=2
@@ -72,32 +96,40 @@ jobs:
           from pathlib import Path
           import shutil
 
-          from release import read_json, verify_aab, write_json
+          from release import internal_qa_manifest, read_json, verify_aab, write_json
 
           bundle = Path('app/build/outputs/bundle/release/app-release.aab')
           config = read_json('release/readiness.json')
-          identity = verify_aab(bundle, os.environ['CANDIDATE_SHA'], config)
-          identity['distribution'] = 'internal QA only'
-          identity['device_qa_passed'] = config['device_qa_passed']
-          identity['accessibility_review_ready'] = config['accessibility_review_ready']
+          identity = internal_qa_manifest(verify_aab(bundle, os.environ['CANDIDATE_SHA'], config), config)
           write_json('play-dist/manifest.json', identity)
           version = identity['version_name']
           if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,49}', version):
               raise ValueError('Version name is not safe for an artifact filename.')
-          shutil.copyfile(bundle, f'play-dist/DualTouch-{version}-internal-qa.aab')
+          artifact_name = 'DualTouch.aab' if os.environ.get('OPS09_VERSION_CODE') else f'DualTouch-{version}-internal-qa.aab'
+          shutil.copyfile(bundle, Path('play-dist') / artifact_name)
           print(Path('play-dist/manifest.json').read_text(encoding='utf-8'))
           PY
       - uses: actions/upload-artifact@v7
+        if: ${{ !inputs.expected_version_code }}
         with:
           path: play-dist/*.aab
           archive: false
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@v7
+        if: ${{ !inputs.expected_version_code }}
         with:
           path: play-dist/manifest.json
           archive: false
           if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: inputs.expected_version_code
+        with:
+          name: dualtouch-ops09-candidate
+          path: play-dist/
+          if-no-files-found: error
+          overwrite: true
           retention-days: 14
       - name: Remove private signing files
         if: always()

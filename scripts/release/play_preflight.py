@@ -16,15 +16,6 @@ def guard():
     return sha
 
 
-def version_codes(items):
-    values = []
-    for item in items:
-        value = str(item.get("versionCode", ""))
-        release.require(re.fullmatch(r"[1-9][0-9]*", value), "Malformed Play binary inventory.")
-        values.append(int(value))
-    return values
-
-
 def check():
     sha = guard()
     token = os.environ.get("PLAY_ACCESS_TOKEN")
@@ -36,29 +27,17 @@ def check():
     root = base + "/" + urllib.parse.quote(edit_id, safe="")
     try:
         tracks = release.request_json("GET", root + "/tracks", token)
-        bundles = release.request_json("GET", root + "/bundles", token)
-        apks = release.request_json("GET", root + "/apks", token)
         release.require(isinstance(tracks.get("tracks"), list), "Track inventory unavailable.")
-        bundle_list = bundles.get("bundles", [])
-        apk_list = apks.get("apks", [])
-        release.require(isinstance(bundle_list, list) and isinstance(apk_list, list), "Binary inventory unavailable.")
-        all_codes = version_codes(bundle_list) + version_codes(apk_list)
-        internal = []
-        for track in tracks["tracks"]:
-            for item in track.get("releases", []):
-                codes = version_codes([{"versionCode": v} for v in item.get("versionCodes", [])])
-                all_codes.extend(codes)
-                if track.get("track") == "internal":
-                    internal.append({"version_codes": codes, "status": item.get("status")})
         release.require(any(t.get("track") == "internal" for t in tracks["tracks"]), "Existing internal track not found.")
+        highest, internal = release.play_inventory(root, tracks["tracks"], token)
         version, name = release.source_version()
         report = {
             "package": release.PACKAGE,
             "source_sha": sha,
             "candidate_version_code": version,
             "candidate_version_name": name,
-            "highest_visible_version_code": max(all_codes, default=0),
-            "candidate_above_visible_inventory": version > max(all_codes, default=0),
+            "highest_visible_version_code": highest,
+            "candidate_above_visible_inventory": version > highest,
             "internal_releases": internal,
             "wif_api_read_ok": True,
             "published": False,

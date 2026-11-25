@@ -1,0 +1,101 @@
+name: OPS-09 DualTouch internal testing release
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_main_sha:
+        description: Exact reviewed current main SHA
+        type: string
+        required: true
+      expected_version_code:
+        description: Unused versionCode matching app source
+        type: string
+        required: true
+      internal_release_approved:
+        description: Approve QA, signed AAB, and Play internal testing release
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: dualtouch-play-release
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    if: github.repository == 'hebi10/DualTouch' && github.ref == 'refs/heads/main' && inputs.internal_release_approved && inputs.expected_version_code != ''
+    uses: ./.github/workflows/internal-qa-bundle.yml
+    with:
+      expected_main_sha: ${{ inputs.expected_main_sha }}
+      expected_version_code: ${{ inputs.expected_version_code }}
+      approved: ${{ inputs.internal_release_approved }}
+    secrets:
+      DUALTOUCH_SIGNING_BUNDLE_BASE64: ${{ secrets.DUALTOUCH_SIGNING_BUNDLE_BASE64 }}
+
+  publish:
+    needs: sign
+    environment: google-play
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      EXPECTED_MAIN_SHA: ${{ inputs.expected_main_sha }}
+      EXPECTED_VERSION_CODE: ${{ inputs.expected_version_code }}
+      RELEASE_APPROVED: ${{ inputs.internal_release_approved }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Validate approval, CI and WIF configuration
+        env:
+          PLAY_PROVIDER: ${{ vars.PLAY_WORKLOAD_IDENTITY_PROVIDER }}
+          PLAY_ACCOUNT: ${{ vars.PLAY_SERVICE_ACCOUNT }}
+        run: |
+          python3 scripts/release/release.py internal-qa-guard
+          test -n "$PLAY_PROVIDER" && test -n "$PLAY_ACCOUNT" || { echo 'DualTouch WIF variables are not configured.' >&2; exit 1; }
+      - uses: actions/download-artifact@v4
+        with:
+          name: dualtouch-ops09-candidate
+          path: candidate
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Download verified bundletool
+        run: |
+          BUNDLETOOL_JAR="$RUNNER_TEMP/bundletool.jar"
+          curl --fail --silent --show-error --location https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar --output "$BUNDLETOOL_JAR"
+          printf '%s  %s\n' a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29 "$BUNDLETOOL_JAR" | sha256sum --check
+          printf 'BUNDLETOOL_JAR=%s\n' "$BUNDLETOOL_JAR" >> "$GITHUB_ENV"
+      - name: Independently verify the signed QA bundle
+        run: python3 scripts/release/release.py verify-internal-qa
+      - uses: google-github-actions/auth@v3
+        id: wif
+        with:
+          workload_identity_provider: ${{ vars.PLAY_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.PLAY_SERVICE_ACCOUNT }}
+          token_format: access_token
+          access_token_scopes: https://www.googleapis.com/auth/androidpublisher
+          create_credentials_file: false
+          export_environment_variables: false
+      - name: Verify inventory, publish to internal, and read back the release
+        env:
+          PLAY_ACCESS_TOKEN: ${{ steps.wif.outputs.access_token }}
+        run: python3 scripts/release/release.py internal-qa
+      - name: Preserve Play commit and readback receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-ops09-receipt-${{ github.run_attempt }}
+          path: play-receipt/receipt.json
+          if-no-files-found: ignore
+          retention-days: 30
