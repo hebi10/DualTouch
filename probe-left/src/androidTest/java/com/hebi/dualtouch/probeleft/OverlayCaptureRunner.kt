@@ -391,6 +391,38 @@ class OverlayCaptureRunner : Instrumentation() {
             .put("design_state_verified", designMatch))
     }
 
+    // Fixture-only window evidence from the observer, not a substitute for the
+    // application's independent ownership check. Never record arbitrary app names.
+    private fun recordOverlayInventory(point: String) {
+        runCatching {
+            val result = JSONArray()
+            for (window in automation.windows) {
+                if (window.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY &&
+                    window.type != AccessibilityWindowInfo.TYPE_MAGNIFICATION_OVERLAY) continue
+                val root = window.getRoot(0)
+                val owner = try { root?.packageName?.toString() } finally { root?.recycle() }
+                val bounds = Rect()
+                window.getBoundsInScreen(bounds)
+                result.put(JSONObject()
+                    .put("type", window.type)
+                    .put("window_id", window.id)
+                    .put("layer", window.layer)
+                    .put("bounds", bounds.flattenToString())
+                    .put("owner_class", when (owner) {
+                        APP -> "controller"
+                        LEFT, RIGHT -> "probe"
+                        null, "" -> "unavailable"
+                        else -> "other"
+                    }))
+            }
+            observations.put(JSONObject().put("overlay_inventory_stage", point)
+                .put("observer_windows", result))
+        }.onFailure {
+            observations.put(JSONObject().put("overlay_inventory_stage", point)
+                .put("observer_inventory_unavailable", true))
+        }
+    }
+
     private fun awaitPairApprovalAfterSearch(): VisibleNode {
         val directions = setOf("왼쪽 직접 → 오른쪽 자동 연결", "위쪽 직접 → 아래쪽 자동 연결")
         repeat(3) { attempt ->
@@ -399,7 +431,8 @@ class OverlayCaptureRunner : Instrumentation() {
                 it.pkg == APP && (
                     it.text in directions ||
                     it.text.contains("화면 구조 검사 시간이 초과되었습니다.") ||
-                    it.text.contains("앱의 화면 구조를 읽을 수 없어")
+                    it.text.contains("앱의 화면 구조를 읽을 수 없어") ||
+                    it.text.contains("다른 접근성 오버레이가 있어")
                 )
             }
             if (result.text in directions) {
@@ -408,8 +441,14 @@ class OverlayCaptureRunner : Instrumentation() {
                 return result
             }
             val timeout = result.text.contains("화면 구조 검사 시간이 초과되었습니다.")
+            val overlayBlocked = result.text.contains("다른 접근성 오버레이가 있어")
             observations.put(JSONObject().put("candidate_search_attempt", attempt + 1)
-                .put("candidate_outcome", if (timeout) "inspection_timeout" else "inspection_incomplete"))
+                .put("candidate_outcome", when {
+                    timeout -> "inspection_timeout"
+                    overlayBlocked -> "overlay_ownership_blocked"
+                    else -> "inspection_incomplete"
+                }))
+            if (overlayBlocked) recordOverlayInventory("pair_selection_rejected")
             // Retry only an explicit pre-approval timeout through the existing UI.
             // Never re-arm input or accept incomplete/sensitive/unknown windows.
             if (!timeout || attempt == 2) error("Candidate inspection blocked: " + result.text)
@@ -429,6 +468,8 @@ class OverlayCaptureRunner : Instrumentation() {
         SystemClock.sleep(1500)
         requireSplit()
         tap(thumb("연결"))
+        awaitNode("connection menu") { it.pkg == APP && it.text == "좌/우 선택 · 앱 연결" }
+        recordOverlayInventory("menu_before_pair_selection")
         tapText(APP, "좌/우 선택 · 앱 연결")
         awaitNode("pair selection title") { it.pkg == APP && it.text == "현재 분할 앱 연결" }
         requireSplit()

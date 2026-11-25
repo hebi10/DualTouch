@@ -301,10 +301,15 @@ internal class ThumbOverlayController(
      * The user must explicitly approve the current pair AND the input direction.
      */
     private fun openPairSelection(previousIssue: SafetyIssue? = null) {
-        closeMenu()
+        // Inspect while the current overlay is still attached. Removing it first
+        // can leave a window with no readable root in the framework snapshot.
+        // Keep capture paused across the replacement; approval revalidates the pair.
         onMenuVisibilityChanged(true)
-        val column = panel()
+        if (thumb == null) return
         val snapshot = candidateProvider()
+        closeMenu(notifyVisibility = false)
+        if (thumb == null) return
+        val column = panel()
         val pair = snapshot.pair
         val title = TextView(context).apply {
             text = "현재 분할 앱 연결"
@@ -740,13 +745,13 @@ internal class ThumbOverlayController(
             position[1] + marker.view.height / 2f)
     }
 
-    private fun closeMenu() {
+    private fun closeMenu(notifyVisibility: Boolean = true) {
         val target = menu ?: return
         menuStateLabel = null
         menuRunButton = null
         menu = null
         safeRemove(target)
-        onMenuVisibilityChanged(false)
+        if (notifyVisibility) onMenuVisibilityChanged(false)
     }
 
     private fun safeRemove(view: View) {
