@@ -492,7 +492,15 @@ class TouchMirrorService : AccessibilityService() {
         }
         if (!armed || event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) return false
         interceptedVolumeDown = event.downTime
+        // Fixed, fixture-only evidence from the real hardware-key callback.
+        if (inspectionDiagnosticsEnabled) android.util.Log.i("DualTouchStopQA", "volume_down_received")
         stop("볼륨 아래 긴급 중지")
+        if (inspectionDiagnosticsEnabled) {
+            val inputOff = !armed && !capturing && !thumbRunning && overlay == null &&
+                !captureFaulted && !gestureFlight.pending &&
+                runCatching { serviceInfo?.motionEventSources == 0 }.getOrDefault(false)
+            android.util.Log.i("DualTouchStopQA", "volume_down_completed input_off=$inputOff")
+        }
         return true
     }
 

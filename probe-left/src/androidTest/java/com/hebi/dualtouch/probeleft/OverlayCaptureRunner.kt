@@ -55,8 +55,17 @@ class OverlayCaptureRunner : Instrumentation() {
             check(scenario in setOf("countdown", "calibration")) { "Unknown scenario" }
             automation = checkNotNull(getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES))
             val info = checkNotNull(automation.serviceInfo)
-            info.flags = info.flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
+            val observerOriginallyRequestedKeys =
+                (info.flags and AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS) != 0
+            info.flags = (info.flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS) and
+                AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS.inv()
             automation.serviceInfo = info
+            val observerFlags = checkNotNull(automation.serviceInfo).flags
+            check((observerFlags and AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS) == 0) {
+                "Fixture observer must not request key filtering"
+            }
+            observations.put(JSONObject().put("observer_requested_key_filter_before", observerOriginallyRequestedKeys)
+                .put("observer_requests_key_filter_after", false))
             runCapture()
         } catch (failure: Exception) {
             error = "$stage: ${failure.message ?: failure.javaClass.simpleName}"
@@ -76,8 +85,7 @@ class OverlayCaptureRunner : Instrumentation() {
             }
         } finally {
             if (::automation.isInitialized) {
-                // Stop any armed session before leaving the disposable test emulator.
-                runCatching { shell("input keyevent KEYCODE_VOLUME_DOWN") }
+                // Cleanup only, never evidence of emergency-stop success.
                 runCatching { shell("am force-stop $APP") }
             }
             val report = JSONObject()
@@ -566,9 +574,17 @@ class OverlayCaptureRunner : Instrumentation() {
         // Never start another scenario until the controller and any armed input
         // have actually stopped. No automatic reactivation of a failed run.
         recordOverlayInventory("before_emergency_stop_$name")
-        shell("input keyevent KEYCODE_VOLUME_DOWN")
+        val currentThumb = awaitNode("actual controller before emergency stop", 2000) {
+            it.pkg == APP && it.description.startsWith("DualTouch Thumb.")
+        }
+        observations.put(JSONObject().put("stop_requested_scenario", name)
+            .put("thumb_before_hardware_key", currentThumb.description))
+        // The host sends one emulator hardware-button press/release when this
+        // instrumentation status arrives. A shell-injected key is not used as
+        // evidence of the real accessibility key callback.
+        sendStatus(1, Bundle().apply { putString("dualtouch_stop_ready", "$source:$name") })
         try {
-            waitFor("all controller overlays removed by volume-down") {
+            waitFor("all controller overlays removed by volume-down", 8000) {
             automation.windows.none { window ->
                 if (window.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) false
                 else {

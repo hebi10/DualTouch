@@ -85,6 +85,62 @@ def read_private(name):
     return adb("exec-out", "run-as", PKG, "cat", "files/overlay-capture/" + name)
 
 
+def stop_evidence():
+    # Only constant diagnostic markers emitted by the real service callback.
+    raw = adb("logcat", "-d", "-v", "raw", "-s", "DualTouchStopQA:I").decode("utf-8", errors="replace")
+    return [line.strip() for line in raw.splitlines() if re.fullmatch(
+        r"volume_down_received|volume_down_completed input_off=(?:true|false)", line.strip())]
+
+
+def send_hardware_volume_down():
+    assert re.fullmatch(r"emulator-\d+", adb("get-serialno").decode().strip()), "CI emulator console required"
+    # Official emulator console EV_KEY path models a button, rather than a
+    # shell InputManager-injected key. Release even when the press check fails.
+    evidence = {"scenario": SCENARIO, "source_commit": SOURCE,
+                "method": "emulator_console_EV_KEY", "press_ok": False, "release_ok": False}
+    path = OUT / "hardware-stop-command.json"
+    def event(value):
+        raw = adb("emu", "event", "send", f"EV_KEY:KEY_VOLUMEDOWN:{value}",
+                  "EV_SYN:SYN_REPORT:0", timeout=3).decode("utf-8", errors="replace")
+        return "OK" in raw.splitlines() and not any(line.startswith("KO") for line in raw.splitlines())
+    try:
+        evidence["press_ok"] = event(1)
+        time.sleep(0.12)
+    finally:
+        try:
+            evidence["release_ok"] = event(0)
+        finally:
+            path.write_text(json.dumps(evidence, indent=2), encoding="utf-8")
+    assert evidence["press_ok"] and evidence["release_ok"], "Emulator hardware-button command failed"
+
+
+def execute_scenario():
+    stream = OUT / "instrumentation.txt"
+    marker = f"INSTRUMENTATION_STATUS: dualtouch_stop_ready={SOURCE}:{SCENARIO}".encode()
+    baseline = stop_evidence()
+    requested = False
+    deadline = time.monotonic() + 480
+    with stream.open("wb") as stdout:
+        process = subprocess.Popen(
+            ["adb", "shell", "am", "instrument", "-w", "-r",
+             "-e", "source_sha", SOURCE, "-e", "scenario", SCENARIO, RUNNER],
+            stdout=stdout, stderr=subprocess.STDOUT,
+        )
+        try:
+            while process.poll() is None:
+                if not requested and marker in stream.read_bytes().splitlines():
+                    requested = True
+                    send_hardware_volume_down()
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Instrumentation scenario exceeded host deadline")
+                time.sleep(0.2)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
+    return process.returncode, stream.read_bytes(), requested, baseline
+
+
 def collect():
     report = json.loads(read_private("report.json").decode("utf-8"))
     report["workflow_commit"] = os.environ.get("GITHUB_SHA", "unknown")
@@ -128,14 +184,20 @@ try:
     adb("shell", "cmd", "uimode", "night", "no")
     adb("shell", "wm", "dismiss-keyguard")
     prepare_fixture()
-    result = subprocess.run(
-        ["adb", "shell", "am", "instrument", "-w", "-r",
-         "-e", "source_sha", SOURCE, "-e", "scenario", SCENARIO, RUNNER],
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=480, check=False,
-    )
-    (OUT / "instrumentation.txt").write_bytes(result.stdout)
+    code, stdout, requested, baseline = execute_scenario()
+    current = stop_evidence()
+    # A fresh disposable emulator provides a unique trial. Reject stale,
+    # missing or duplicate evidence; no successful inference from screenshots.
+    assert current[:len(baseline)] == baseline, "Stop diagnostic sequence changed"
+    callbacks = current[len(baseline):]
+    (OUT / "hardware-stop-callbacks.json").write_text(json.dumps({
+        "scenario": SCENARIO, "source_commit": SOURCE, "requested": requested,
+        "callbacks": callbacks
+    }, indent=2), encoding="utf-8")
     collect()
-    assert result.returncode == 0 and b"INSTRUMENTATION_CODE: -1" in result.stdout, "Instrumentation did not finish successfully"
+    assert code == 0 and b"INSTRUMENTATION_CODE: -1" in stdout, "Instrumentation did not finish successfully"
+    assert requested, "No hardware stop request was observed"
+    assert callbacks == ["volume_down_received", "volume_down_completed input_off=true"], "Real key callback and input release not verified"
 except Exception as error:
     failure = str(error)
     (OUT / "host-failure.json").write_text(json.dumps({
@@ -160,7 +222,6 @@ finally:
         except Exception:
             (OUT / "inspection-timing.txt").write_text("Numeric timing collection unavailable\n", encoding="utf-8")
     for command in [
-        ("input", "keyevent", "KEYCODE_VOLUME_DOWN"),
         ("am", "force-stop", "com.hebi.dualtouch"),
         ("wm", "size", "reset"),
         ("wm", "density", "reset"),

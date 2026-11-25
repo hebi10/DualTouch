@@ -611,7 +611,7 @@ internal class ThumbOverlayController(
         }
         column.addView(TextView(context).apply {
             text = "앱 분할 배치: $layoutLabel\n" +
-                "앱의 실제 분할 방향은 Android에서 변경한 뒤 다시 연결하세요."
+                "Android에서 분할 방향을 바꾸면 다시 연결하세요."
             textSize = 13f
             setTextColor(palette.text)
             setPadding(dp(4), dp(4), dp(4), dp(4))
@@ -629,7 +629,7 @@ internal class ThumbOverlayController(
         feedback = calibrationStatus
         column.addView(calibrationStatus)
         val guideNotice = TextView(context).apply {
-            text = "기준선은 표시용이며 Android 분할 경계를 이동하지 않습니다."
+            text = "기준선은 표시용입니다. 실제 분할 경계는 이동하지 않습니다."
             textSize = 12f
             setTextColor(palette.secondary)
             setPadding(dp(4), dp(8), dp(4), dp(8))
@@ -650,6 +650,9 @@ internal class ThumbOverlayController(
             max = CalibrationGuide.MAX_PERCENT - CalibrationGuide.MIN_PERCENT
             progress = guidePercent - CalibrationGuide.MIN_PERCENT
             minHeight = dp(52)
+            progressTintList = android.content.res.ColorStateList.valueOf(palette.text)
+            thumbTintList = android.content.res.ColorStateList.valueOf(palette.text)
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(palette.line)
             contentDescription = "중앙 기준선 위치 조절"
         }
         axisButton.setOnClickListener {
@@ -685,6 +688,11 @@ internal class ThumbOverlayController(
             }
         })
         column.addView(positionSlider)
+        val range = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        range.addView(UiKit.text(context, palette, "20%", 12f, secondary = true),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        range.addView(UiKit.text(context, palette, "80%", 12f, secondary = true))
+        UiKit.add(column, range, bottomDp = 4)
         addButton(column, "중앙 기준선 50%") {
             if (changeGuide(pair, guideAxis, CalibrationGuide.DEFAULT_PERCENT)) {
                 positionSlider.progress = guidePercent - CalibrationGuide.MIN_PERCENT
@@ -721,7 +729,10 @@ internal class ThumbOverlayController(
                 Toast.makeText(context, "현재 연결과 방향의 영점을 저장했습니다.", Toast.LENGTH_SHORT).show()
             }
         }
-        addButton(column, "영점 초기화") {
+        val compactActions = safeWindowBounds().width() >= dp(300) &&
+            context.resources.configuration.fontScale <= 1.3f
+        val secondaryActions = if (compactActions) UiKit.panePair(context, 8, 0.5f) else null
+        addButton(secondaryActions?.primary ?: column, "영점 초기화") {
             val reset = onCalibrationReset(pair, side)
             if (reset) {
                 guidePrefs.edit()
@@ -733,7 +744,8 @@ internal class ThumbOverlayController(
             endCalibration()
             Toast.makeText(context, if (reset) "현재 방향의 영점을 초기화했습니다." else "창이 변경되어 초기화할 수 없습니다. 다시 연결해 주세요.", Toast.LENGTH_LONG).show()
         }
-        addButton(column, "취소") { endCalibration() }
+        addButton(secondaryActions?.secondary ?: column, "취소") { endCalibration() }
+        secondaryActions?.let { UiKit.add(column, it.row) }
 
         val bounds = safeWindowBounds()
         val panelWidth = dp(276)
