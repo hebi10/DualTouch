@@ -42,7 +42,7 @@ jobs:
             exit 1
           fi
       - name: Lint, unit tests and debug builds
-        run: gradle --no-daemon :app:lintDebug :app:lintRelease :app:testDebugUnitTest :app:assembleRelease :app:assembleDebug :probe-left:assembleDebug :probe-right:assembleDebug
+        run: gradle --no-daemon :app:lintDebug :app:lintRelease :app:testDebugUnitTest :app:assembleRelease :app:assembleDebug :probe-left:assembleDebug :probe-right:assembleDebug :probe-left:assembleDebugAndroidTest
       - name: Upload standalone user installation APK
         uses: actions/upload-artifact@v4
         with:
@@ -57,6 +57,14 @@ jobs:
           path: |
             probe-left/build/outputs/apk/debug/*.apk
             probe-right/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload isolated overlay capture instrumentation
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-overlay-capture-test
+          path: probe-left/build/outputs/apk/androidTest/debug/*.apk
           if-no-files-found: error
           retention-days: 7
 
@@ -107,3 +115,46 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+
+  overlay-ui:
+    name: Real split probe and overlay captures (not physical-device QA)
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dualtouch-standalone-debug
+          path: qa/overlay-apk/main
+      - uses: actions/download-artifact@v4
+        with:
+          name: dualtouch-dev-probes
+          path: qa/overlay-apk/probes
+      - uses: actions/download-artifact@v4
+        with:
+          name: dualtouch-overlay-capture-test
+          path: qa/overlay-apk/test
+      - name: Enable emulator acceleration
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Capture actual split and overlay states in an isolated emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
+        env:
+          SOURCE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          script: python3 scripts/capture_overlay_screens.py
+      - name: Preserve captured states and diagnostic report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dualtouch-actual-overlay-screenshots
+          path: qa/overlay-screenshots
+          if-no-files-found: warn
+          retention-days: 7
