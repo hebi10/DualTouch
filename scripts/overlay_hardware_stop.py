@@ -3,59 +3,38 @@
 Transport acknowledgement is not proof of key delivery. The caller must also
 require the fresh application callback and released input state.
 """
+import json
 import re
 import subprocess
 import time
 
 
-def console_result(returncode, output):
-    lines = [line.strip() for line in output.splitlines() if line.strip()]
-    rejected = any(line == "KO" or line.startswith("KO:") for line in lines)
-    # Keep only a classification, never dump arbitrary console/auth output.
-    if rejected:
-        error = "console_rejected"
-    elif returncode != 0:
-        error = "nonzero_exit"
-    elif any(line != "OK" for line in lines):
-        error = "unexpected_response"
-    else:
-        error = None
-    return {
-        "returncode": returncode,
-        "acknowledgement": "ok" if "OK" in lines else "silent",
-        "error": error,
-        "accepted": error is None,
-    }
-
-
-def press_and_release(serial, run=subprocess.run, sleep=time.sleep):
+def press_and_release(serial, proto_dir, run=subprocess.run, sleep=time.sleep):
     if not re.fullmatch(r"emulator-\d+", serial):
-        raise ValueError("Disposable emulator console required")
+        raise ValueError("Disposable emulator required")
 
-    def event(value):
-        # Linux EV_KEY=1, KEY_VOLUMEDOWN=114, EV_SYN/SYN_REPORT=0.
-        # Numeric fields avoid emulator-version-specific code aliases.
-        command = ["adb", "-s", serial, "emu", "event", "send",
-                   f"1:114:{value}", "0:0:0"]
+    def event(event_type):
+        payload = json.dumps({"codeType": "Evdev", "eventType": event_type, "keyCode": 114})
+        command = ["grpcurl", "-plaintext", "-max-time", "2", "-import-path", str(proto_dir),
+                   "-proto", "emulator_controller.proto", "-d", payload, "127.0.0.1:8556",
+                   "android.emulation.control.EmulatorController/sendKey"]
         try:
-            result = run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            result = run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                          timeout=3, check=False)
-            output = result.stdout.decode("utf-8", errors="replace")
-            return console_result(result.returncode, output)
+            return {"returncode": result.returncode,
+                    "error": None if result.returncode == 0 else "rpc_failed",
+                    "accepted": result.returncode == 0}
         except (OSError, subprocess.SubprocessError) as failure:
-            return {"returncode": None, "acknowledgement": "unavailable",
-                    "error": type(failure).__name__, "accepted": False}
+            return {"returncode": None, "error": type(failure).__name__, "accepted": False}
 
-    evidence = {"press": None, "release": None}
     try:
-        evidence["press"] = event(1)
+        press = event("keydown")
         sleep(0.12)
     finally:
-        # Always release, even if transport acknowledgement was lost.
-        evidence["release"] = event(0)
-    evidence["press_ok"] = evidence["press"]["accepted"]
-    evidence["release_ok"] = evidence["release"]["accepted"]
-    return evidence
+        # Release even if the press response was lost.
+        release = event("keyup")
+    return {"press": press, "release": release,
+            "press_ok": press["accepted"], "release_ok": release["accepted"]}
 
 
 def classify_guest_volume_events(returncode, output, observer_started=True):

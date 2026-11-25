@@ -100,11 +100,13 @@ def stop_evidence():
 
 def send_hardware_volume_down():
     evidence = {"scenario": SCENARIO, "source_commit": SOURCE,
-                "method": "emulator_console_numeric_EV_KEY",
+                "method": "emulator_grpc_send_key_evdev",
                 "press_ok": False, "release_ok": False}
     try:
         serial = adb("get-serialno", timeout=3).decode().strip()
-        command, guest = observe_guest_volume_events(serial, lambda: press_and_release(serial))
+        proto_dir = Path(os.environ["ANDROID_SDK_ROOT"]) / "emulator" / "lib"
+        command, guest = observe_guest_volume_events(
+            serial, lambda: press_and_release(serial, proto_dir))
         evidence.update(command)
         evidence["guest_volume_observation"] = guest
     except Exception as error:
