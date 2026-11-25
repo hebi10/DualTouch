@@ -50,10 +50,10 @@ class SettingsActivity : Activity() {
         UiKit.applyWindowInsets(scroll)
         setContentView(scroll)
 
-        if (viewport.widthCategory == WidthCategory.COMPACT) root.setPadding(UiKit.dp(this, 4), UiKit.dp(this, 12), UiKit.dp(this, 4), UiKit.dp(this, 20))
+        if (viewport.widthCategory == WidthCategory.COMPACT) root.setPadding(UiKit.dp(this, 4), UiKit.dp(this, 6), UiKit.dp(this, 4), UiKit.dp(this, 20))
         UiKit.add(root, UiKit.toolbar(this, palette, "터치 표시 설정", back = { finish() }))
         UiKit.add(root, UiKit.text(this, palette,
-            "변경 내용은 즉시 저장됩니다.", 13f, secondary = true), topDp = 4, bottomDp = 14)
+            "변경 내용은 즉시 저장됩니다.", 13f, secondary = true), topDp = 4, bottomDp = 10)
 
         val pageRoot = root
         var controlsRoot: LinearLayout? = null
@@ -64,8 +64,8 @@ class SettingsActivity : Activity() {
             controlsRoot = panes.secondary
         }
 
-        UiKit.add(root, UiKit.sectionHeader(this, palette, "미리보기"), bottomDp = 10)
-        val preview = UiKit.card(this, palette, 18)
+        val preview = UiKit.card(this, palette, 12)
+        UiKit.add(preview, UiKit.sectionHeader(this, palette, "미리보기"), bottomDp = 8)
         previewRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -78,26 +78,24 @@ class SettingsActivity : Activity() {
             addView(previewRow)
         }
         UiKit.add(preview, previewScroll)
-        UiKit.add(preview, UiKit.text(this, palette,
-            "Thumb · 직접 터치점 · 자동 터치점", 12f, secondary = true), topDp = 10)
-        UiKit.add(root, preview, bottomDp = 22)
+        UiKit.add(root, preview, bottomDp = 16)
         if (controlsRoot != null) root = controlsRoot
 
         UiKit.add(root, UiKit.sectionHeader(this, palette, "플로팅 Thumb"), bottomDp = 8)
-        addSlider("Thumb 크기", "48–88dp, 터치 영역을 충분히 확보합니다.",
+        addSlider("Thumb 크기", "터치 영역은 최소 48dp입니다.",
             AppearanceRules.MIN_SIZE_DP, AppearanceRules.MAX_SIZE_DP,
             appearance.thumbSizeDp, "dp") { appearance.copy(thumbSizeDp = it) }
-        addSlider("Thumb 투명도", "완전히 사라지지 않도록 최소 40%로 제한합니다.",
+        addSlider("Thumb 투명도", "최소 40% 불투명도를 유지합니다.",
             AppearanceRules.MIN_OPACITY, AppearanceRules.MAX_OPACITY,
             appearance.thumbOpacityPercent, "%") { appearance.copy(thumbOpacityPercent = it) }
-        addColors("Thumb 색상", appearance.thumbColor) {
+        addColors("Thumb 색상", appearance.thumbColor, isThumb = true) {
             appearance.copy(thumbColor = it)
         }
 
-        UiKit.add(root, UiKit.sectionHeader(this, palette, "영점 기준점"), topDp = 24, bottomDp = 8)
+        UiKit.add(root, UiKit.sectionHeader(this, palette, "영점 기준점"), topDp = 18, bottomDp = 6)
         UiKit.add(root, UiKit.text(this, palette,
-            "직접 터치는 기본 빨강, 자동 터치는 기본 흰색입니다. 색상을 바꿔도 각 점의 역할은 유지됩니다.",
-            13f, secondary = true), bottomDp = 10)
+            "기본 직접점은 빨강, 자동점은 흰색입니다. 색상 변경 시에도 역할은 유지됩니다.",
+            13f, secondary = true), bottomDp = 6)
         addSlider("터치 점 크기", "빨강과 흰색 기준점에 공통 적용됩니다.",
             AppearanceRules.MIN_SIZE_DP, AppearanceRules.MAX_SIZE_DP,
             appearance.markerSizeDp, "dp") { appearance.copy(markerSizeDp = it) }
@@ -150,11 +148,11 @@ class SettingsActivity : Activity() {
         modify: (Int) -> TouchAppearance,
     ) {
         val headingRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        headingRow.addView(UiKit.text(this, palette, title, 15f, true),
+        headingRow.addView(UiKit.text(this, palette, "$title ($min–$max$suffix)", 14f, true),
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         val number = UiKit.text(this, palette, "$current$suffix", 14f, true)
         headingRow.addView(number)
-        UiKit.add(root, headingRow, topDp = 10)
+        UiKit.add(root, headingRow, topDp = 8)
         val seek = SeekBar(this).apply {
             this.max = max - min
             progress = current - min
@@ -177,22 +175,20 @@ class SettingsActivity : Activity() {
                 }
             }
         })
-        UiKit.add(root, seek, topDp = 2)
-        val range = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        range.addView(UiKit.text(this, palette, "$min$suffix", 11f, secondary = true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        range.addView(UiKit.text(this, palette, "$max$suffix", 11f, secondary = true))
-        UiKit.add(root, range)
-        UiKit.add(root, UiKit.text(this, palette, description, 12f, secondary = true), topDp = 2)
+        UiKit.add(root, seek)
+        UiKit.add(root, UiKit.text(this, palette, description, 12f, secondary = true))
     }
 
     private fun addColors(
         title: String,
         active: Int,
+        isThumb: Boolean = false,
         modify: (Int) -> TouchAppearance,
     ) {
         UiKit.add(root, UiKit.text(this, palette, title, 15f, true), topDp = 16)
         val choices = UiKit.column(this)
-        val chips = mutableListOf<Pair<ColorChoice, TextView>>()
+        var selectedColor = active
+        val chips = mutableListOf<Triple<ColorChoice, TextView, TextView>>()
         var row: LinearLayout? = null
         TouchColors.choices.forEachIndexed { index, choice ->
             if (index % 4 == 0) {
@@ -200,20 +196,27 @@ class SettingsActivity : Activity() {
                 UiKit.add(choices, requireNotNull(row), topDp = if (index == 0) 0 else 6)
             }
             val group = UiKit.column(this, 2).apply { gravity = Gravity.CENTER_HORIZONTAL; minimumWidth = UiKit.dp(this@SettingsActivity, 52) }
-            val marker = previewDot("", choice.argb, 48, 100)
+            val shown = TouchColors.displayChoice(choice, selectedColor, isThumb)
+            val marker = previewDot("", shown.argb, 48, 100)
             marker.isClickable = true
             marker.isFocusable = true
-            setChipState(marker, title, choice, choice.argb == active)
+            val name = UiKit.centeredLabel(this, shown.title, palette.secondary, 11f)
+            setChipState(marker, title, shown, shown.argb == selectedColor)
             marker.setOnClickListener {
-                appearance = modify(choice.argb)
+                selectedColor = TouchColors.displayChoice(choice, selectedColor, isThumb).argb
+                appearance = modify(selectedColor)
                 persist()
                 redrawPreview()
-                chips.forEach { (option, chip) -> setChipState(chip, title, option, option.argb == choice.argb) }
+                chips.forEach { (option, chip, label) ->
+                    val displayed = TouchColors.displayChoice(option, selectedColor, isThumb)
+                    label.text = displayed.title
+                    setChipState(chip, title, displayed, displayed.argb == selectedColor)
+                }
             }
             group.addView(marker, LinearLayout.LayoutParams(UiKit.dp(this, 48), UiKit.dp(this, 48)))
-            group.addView(UiKit.centeredLabel(this, choice.title, palette.secondary, 11f))
+            group.addView(name)
             requireNotNull(row).addView(group, LinearLayout.LayoutParams(UiKit.dp(this, 56), ViewGroup.LayoutParams.WRAP_CONTENT))
-            chips.add(choice to marker)
+            chips.add(Triple(choice, marker, name))
         }
         val horizontal = HorizontalScrollView(this).apply {
             isFillViewport = true
@@ -231,6 +234,7 @@ class SettingsActivity : Activity() {
         selected: Boolean,
     ) {
         marker.text = if (selected) "✓" else ""
+        marker.setTextColor(AppearanceRules.readableTextColor(choice.argb))
         marker.isSelected = selected
         marker.contentDescription = "$title: ${choice.title}" +
             if (selected) ", 선택됨" else ", 선택 가능"

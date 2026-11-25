@@ -54,6 +54,11 @@ object TouchColors {
         ColorChoice("노랑", 0xFFF4D35E.toInt()),
     )
 
+    fun displayChoice(choice: ColorChoice, active: Int, isThumb: Boolean): ColorChoice =
+        if (isThumb && active == TouchAppearance().thumbColor && choice == choices.first()) {
+            choice.copy(title = "기본 검정", argb = active)
+        } else choice
+
     fun labelOf(color: Int): String =
         choices.firstOrNull { it.argb == color }?.title ?: "선택 색상"
 }

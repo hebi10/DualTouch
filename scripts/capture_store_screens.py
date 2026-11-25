@@ -114,6 +114,11 @@ try:
     shell("input", "swipe", "540", "1550", "540", "450", "450")
     time.sleep(1)
     capture("phone-03b-settings-scroll-light")
+    # Capture actual lower settings rather than extrapolating off-screen controls.
+    for _ in range(5):
+        shell("input", "swipe", "540", "1620", "540", "360", "350")
+        time.sleep(0.5)
+    capture("phone-03c-settings-bottom-light")
     launch()
     tap("플로팅 표시")
     capture("phone-04-disclosure-light")
@@ -123,6 +128,13 @@ try:
     launch()
     tap("오류·중지 안내")
     capture("phone-05b-help-light")
+    # 1080x2160 at 420dpi approximates the 412x824dp design viewport.
+    shell("wm", "size", "1080x2160")
+    launch()
+    capture("phone-tall-01-home-light")
+    tap("표시 설정")
+    capture("phone-tall-02-settings-light")
+    shell("wm", "size", "1080x1920")
     shell("cmd", "uimode", "night", "yes")
     launch()
     capture("phone-06-home-dark")
