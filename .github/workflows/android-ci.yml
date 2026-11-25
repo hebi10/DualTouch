@@ -35,6 +35,8 @@ jobs:
           gradle-version: '8.11.1'
       - name: Release pipeline regression tests
         run: python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
+      - name: Emulator hardware-stop transport regression tests
+        run: python3 -m unittest discover -s scripts -p 'test_overlay_hardware_stop.py' -v
       - name: Restricted permission audit
         run: |
           if grep -nE 'android.permission.(INTERNET|SYSTEM_ALERT_WINDOW|QUERY_ALL_PACKAGES|BIND_DEVICE_ADMIN)' app/src/main/AndroidManifest.xml; then

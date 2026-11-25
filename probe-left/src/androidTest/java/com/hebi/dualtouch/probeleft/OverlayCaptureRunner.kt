@@ -88,22 +88,37 @@ class OverlayCaptureRunner : Instrumentation() {
                 // Cleanup only, never evidence of emergency-stop success.
                 runCatching { shell("am force-stop $APP") }
             }
-            val report = JSONObject()
-                .put("source_commit", source)
-                .put("scenario", scenario)
-                .put("android_api", android.os.Build.VERSION.SDK_INT)
-                .put("environment", "disposable Android emulator; real probe app windows")
-                .put("physical_foldable_verified", false)
-                .put("touch_mirroring_verified", false)
-                .put("captures", captures)
-                .put("observations", observations)
-                .put("completed", error == null)
-                .put("error", error ?: JSONObject.NULL)
-            File(output, "report.json").writeText(report.toString(2), Charsets.UTF_8)
+            writeCaptureReport("report.json", error == null, error)
             finish(if (error == null) Activity.RESULT_OK else Activity.RESULT_CANCELED,
                 Bundle().apply { putString("stream", "\nOverlay capture: ${error ?: "completed"}\n") })
         }
     }
+
+    private fun writeCaptureReport(filename: String, completed: Boolean, error: String?) {
+        val report = JSONObject()
+            .put("source_commit", source)
+            .put("scenario", scenario)
+            .put("android_api", android.os.Build.VERSION.SDK_INT)
+            .put("environment", "disposable Android emulator; real probe app windows")
+            .put("physical_foldable_verified", false)
+            .put("touch_mirroring_verified", false)
+            .put("captures", captures)
+            .put("observations", observations)
+            .put("completed", completed)
+            .put("error", error ?: JSONObject.NULL)
+        val atomic = android.util.AtomicFile(File(output, filename))
+        val stream = atomic.startWrite()
+        try {
+            stream.write(report.toString(2).toByteArray(Charsets.UTF_8))
+            atomic.finishWrite(stream)
+        } catch (failure: Exception) {
+            atomic.failWrite(stream)
+            throw failure
+        }
+    }
+
+    private fun checkpoint() =
+        writeCaptureReport("checkpoint.json", false, "Scenario has not completed")
 
     private fun shell(command: String): String =
         ParcelFileDescriptor.AutoCloseInputStream(automation.executeShellCommand(command))
@@ -415,6 +430,9 @@ class OverlayCaptureRunner : Instrumentation() {
         captures.put(JSONObject().put("file", file.name).put("state", state)
             .put("sha256", sha).put("width", width).put("height", height)
             .put("design_state_verified", designMatch))
+        // Persist the verified state and digest before requesting any further
+        // interaction; the host can recover partial evidence after failure.
+        checkpoint()
     }
 
     // Fixture-only window evidence from the observer, not a substitute for the
@@ -569,6 +587,9 @@ class OverlayCaptureRunner : Instrumentation() {
         screenshot("DES-09-thumb-running", "active real countdown; no mirrored taps issued")
     }
 
+    private fun capturesContains(filename: String): Boolean =
+        (0 until captures.length()).any { captures.getJSONObject(it).optString("file") == filename }
+
     private fun stopScenario(name: String) {
         stage = "$name / emergency stop"
         // Never start another scenario until the controller and any armed input
@@ -579,6 +600,13 @@ class OverlayCaptureRunner : Instrumentation() {
         }
         observations.put(JSONObject().put("stop_requested_scenario", name)
             .put("thumb_before_hardware_key", currentThumb.description))
+        if (name == "countdown" && capturesContains("DES-09-thumb-running.png")) {
+            check(currentThumb.description.contains("실행 중") &&
+                Regex("(?:[1-9]|1[0-9]|20)초").matches(currentThumb.text)) {
+                "Countdown is no longer active before the hardware key"
+            }
+        }
+        checkpoint()
         // The host sends one emulator hardware-button press/release when this
         // instrumentation status arrives. A shell-injected key is not used as
         // evidence of the real accessibility key callback.

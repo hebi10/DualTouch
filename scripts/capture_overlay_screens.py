@@ -7,6 +7,8 @@ import subprocess
 import time
 from pathlib import Path
 
+from overlay_hardware_stop import press_and_release
+
 ROOT = Path("qa/overlay-apk")
 OUT = Path("qa/overlay-screenshots")
 OUT.mkdir(parents=True, exist_ok=True)
@@ -93,25 +95,18 @@ def stop_evidence():
 
 
 def send_hardware_volume_down():
-    assert re.fullmatch(r"emulator-\d+", adb("get-serialno").decode().strip()), "CI emulator console required"
-    # Official emulator console EV_KEY path models a button, rather than a
-    # shell InputManager-injected key. Release even when the press check fails.
     evidence = {"scenario": SCENARIO, "source_commit": SOURCE,
-                "method": "emulator_console_EV_KEY", "press_ok": False, "release_ok": False}
-    path = OUT / "hardware-stop-command.json"
-    def event(value):
-        raw = adb("emu", "event", "send", f"EV_KEY:KEY_VOLUMEDOWN:{value}",
-                  "EV_SYN:SYN_REPORT:0", timeout=3).decode("utf-8", errors="replace")
-        return "OK" in raw.splitlines() and not any(line.startswith("KO") for line in raw.splitlines())
+                "method": "emulator_console_numeric_EV_KEY",
+                "press_ok": False, "release_ok": False}
     try:
-        evidence["press_ok"] = event(1)
-        time.sleep(0.12)
+        serial = adb("get-serialno", timeout=3).decode().strip()
+        evidence.update(press_and_release(serial))
+    except Exception as error:
+        evidence["transport_error"] = type(error).__name__
     finally:
-        try:
-            evidence["release_ok"] = event(0)
-        finally:
-            path.write_text(json.dumps(evidence, indent=2), encoding="utf-8")
-    assert evidence["press_ok"] and evidence["release_ok"], "Emulator hardware-button command failed"
+        (OUT / "hardware-stop-command.json").write_text(
+            json.dumps(evidence, indent=2), encoding="utf-8")
+    return evidence
 
 
 def execute_scenario():
@@ -119,6 +114,7 @@ def execute_scenario():
     marker = f"INSTRUMENTATION_STATUS: dualtouch_stop_ready={SOURCE}:{SCENARIO}".encode()
     baseline = stop_evidence()
     requested = False
+    command = None
     deadline = time.monotonic() + 480
     with stream.open("wb") as stdout:
         process = subprocess.Popen(
@@ -130,7 +126,9 @@ def execute_scenario():
             while process.poll() is None:
                 if not requested and marker in stream.read_bytes().splitlines():
                     requested = True
-                    send_hardware_volume_down()
+                    # A transport failure is still a failed stop test, but must
+                    # not kill instrumentation before it saves its evidence.
+                    command = send_hardware_volume_down()
                 if time.monotonic() >= deadline:
                     raise TimeoutError("Instrumentation scenario exceeded host deadline")
                 time.sleep(0.2)
@@ -138,18 +136,26 @@ def execute_scenario():
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=10)
-    return process.returncode, stream.read_bytes(), requested, baseline
+    return process.returncode, stream.read_bytes(), requested, baseline, command
 
 
 def collect():
-    report = json.loads(read_private("report.json").decode("utf-8"))
-    report["workflow_commit"] = os.environ.get("GITHUB_SHA", "unknown")
-    report["checkout_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    final_report = True
+    try:
+        report = json.loads(read_private("report.json").decode("utf-8"))
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+        # Only already verified screenshots from an atomic checkpoint may be
+        # recovered. A missing final report can never pass a scenario.
+        final_report = False
+        report = json.loads(read_private("checkpoint.json").decode("utf-8"))
     assert report["source_commit"] == SOURCE, "Capture source SHA differs"
     assert report["scenario"] == SCENARIO, "Capture scenario differs"
     assert report["physical_foldable_verified"] is False
     assert report["touch_mirroring_verified"] is False
+    report["workflow_commit"] = os.environ.get("GITHUB_SHA", "unknown")
+    report["checkout_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    report["final_report_available"] = final_report
+    (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     verified = set()
     for capture in report["captures"]:
         name = capture["file"]
@@ -160,6 +166,7 @@ def collect():
         (OUT / name).write_bytes(data)
         if capture["design_state_verified"]:
             verified.add(name)
+    assert final_report, "Only partial capture checkpoint recovered"
     assert report["completed"], report.get("error")
     assert verified == EXPECTED, f"Missing actual design states: {EXPECTED - verified}"
 
@@ -184,7 +191,7 @@ try:
     adb("shell", "cmd", "uimode", "night", "no")
     adb("shell", "wm", "dismiss-keyguard")
     prepare_fixture()
-    code, stdout, requested, baseline = execute_scenario()
+    code, stdout, requested, baseline, command = execute_scenario()
     current = stop_evidence()
     # A fresh disposable emulator provides a unique trial. Reject stale,
     # missing or duplicate evidence; no successful inference from screenshots.
@@ -194,9 +201,11 @@ try:
         "scenario": SCENARIO, "source_commit": SOURCE, "requested": requested,
         "callbacks": callbacks
     }, indent=2), encoding="utf-8")
+    # Copy all verified screenshots before evaluating the stop result.
     collect()
     assert code == 0 and b"INSTRUMENTATION_CODE: -1" in stdout, "Instrumentation did not finish successfully"
     assert requested, "No hardware stop request was observed"
+    assert command and command["press_ok"] and command["release_ok"], "Emulator hardware-button command failed"
     assert callbacks == ["volume_down_received", "volume_down_completed input_off=true"], "Real key callback and input release not verified"
 except Exception as error:
     failure = str(error)
