@@ -76,6 +76,7 @@ internal class ThumbOverlayController(
     private val palette: UiPalette get() = UiPalette(context)
     private val displayHandler = Handler(Looper.getMainLooper())
     private var pendingPairConfirmation: Runnable? = null
+    private var pendingRunRequest: Runnable? = null
     private var pendingCalibrationExit: Runnable? = null
     private var menuStateLabel: TextView? = null
     private var menuRunButton: Button? = null
@@ -117,8 +118,9 @@ internal class ThumbOverlayController(
         val layout = params(size, size, x, y)
         configureDrag(view, layout, onMove = { nextX, nextY ->
             if (calibrating) return@configureDrag
-            if (pendingPairConfirmation != null) {
+            if (pendingPairConfirmation != null || pendingRunRequest != null) {
                 cancelPairConfirmation()
+                cancelRunRequest()
                 onMenuVisibilityChanged(false)
             }
             val screen = safeWindowBounds()
@@ -260,6 +262,7 @@ internal class ThumbOverlayController(
     fun hide() {
         cancelCalibrationExit()
         cancelPairConfirmation()
+        cancelRunRequest()
         displayHandler.removeCallbacks(displayTick)
         menuStateLabel = null
         menuRunButton = null
@@ -279,6 +282,7 @@ internal class ThumbOverlayController(
         if (menu != null || calibrating) return
         cancelCalibrationExit()
         cancelPairConfirmation()
+        cancelRunRequest()
         onMenuVisibilityChanged(true)
         if (thumb == null) return
         val column = panel()
@@ -296,8 +300,11 @@ internal class ThumbOverlayController(
             setOnClickListener {
                 if (requestedStart != !runningProvider()) {
                     closeMenu()
+                } else if (requestedStart) {
+                    requestRunAfterMenuRemoval()
                 } else {
-                    when (val issue = onRunRequest(requestedStart)) {
+                    // A stop request remains immediate.
+                    when (val issue = onRunRequest(false)) {
                         SafetyIssue.NONE -> closeMenu()
                         SafetyIssue.UNAPPROVED_PAIR -> openPairSelection()
                         else -> openPairSelection(issue)
@@ -327,6 +334,7 @@ internal class ThumbOverlayController(
     private fun openPairSelection(previousIssue: SafetyIssue? = null) {
         cancelCalibrationExit()
         cancelPairConfirmation()
+        cancelRunRequest()
         // Inspect while the current overlay is still attached. Removing it first
         // can leave a window with no readable root in the framework snapshot.
         // Keep capture paused across the replacement; approval revalidates the pair.
@@ -398,6 +406,39 @@ internal class ThumbOverlayController(
         if (!showMenu(column, 316, at[0] + (thumb?.view?.width ?: dp(56)) + dp(8), at[1])) {
             onMenuVisibilityChanged(false)
         }
+    }
+
+    private fun cancelRunRequest() {
+        pendingRunRequest?.let { displayHandler.removeCallbacks(it) }
+        pendingRunRequest = null
+    }
+
+    private fun requestRunAfterMenuRemoval() {
+        cancelRunRequest()
+        val selectedThumb = thumb ?: return
+        if (menu == null || calibrating || runningProvider()) return
+        onMenuVisibilityChanged(true)
+        if (thumb !== selectedThumb) return
+        closeMenu(notifyVisibility = false)
+        val start = object : Runnable {
+            override fun run() {
+                if (pendingRunRequest !== this) return
+                pendingRunRequest = null
+                if (thumb !== selectedThumb || menu != null || calibrating || runningProvider()) return
+                // This remains an explicit single request. The service must
+                // freshly verify the approved pair, environment and input state.
+                val issue = onRunRequest(true)
+                if (thumb !== selectedThumb) return
+                when (issue) {
+                    SafetyIssue.NONE -> onMenuVisibilityChanged(false)
+                    SafetyIssue.UNAPPROVED_PAIR -> openPairSelection()
+                    else -> openPairSelection(issue)
+                }
+            }
+        }
+        pendingRunRequest = start
+        // Input stays paused while the removed menu window leaves the snapshot.
+        displayHandler.postDelayed(start, 300L)
     }
 
     private fun cancelPairConfirmation() {
@@ -824,7 +865,8 @@ internal class ThumbOverlayController(
             override fun run() {
                 if (pendingCalibrationExit !== this) return
                 pendingCalibrationExit = null
-                if (thumb !== selectedThumb || calibrating || menu != null || pendingPairConfirmation != null) return
+                if (thumb !== selectedThumb || calibrating || menu != null ||
+                    pendingPairConfirmation != null || pendingRunRequest != null) return
                 onMenuVisibilityChanged(false)
             }
         }

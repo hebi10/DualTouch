@@ -12,6 +12,51 @@ PACKAGE = "com.hebi.dualtouch"
 OUTPUT = Path("qa/store-screenshots")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 records = []
+fixture_launcher_recovered = False
+
+def prepare_fixture():
+    # This script changes display configuration and must only run in disposable CI.
+    assert os.environ.get("GITHUB_ACTIONS") == "true", "CI fixture only"
+    assert shell("getprop", "ro.kernel.qemu").strip() == "1", "Emulator required"
+    deadline = time.monotonic() + 60
+    while True:
+        if (shell("getprop", "sys.boot_completed").strip() == "1" and
+            shell("settings", "get", "global", "device_provisioned").strip() == "1" and
+            shell("settings", "get", "secure", "user_setup_complete").strip() == "1"):
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError("CI emulator setup did not finish")
+        time.sleep(3)
+    time.sleep(5)
+
+def recover_initial_launcher_anr():
+    global fixture_launcher_recovered
+    if records or fixture_launcher_recovered:
+        return False
+    if os.environ.get("GITHUB_ACTIONS") != "true" or shell("getprop", "ro.kernel.qemu").strip() != "1":
+        return False
+    if (shell("getprop", "sys.boot_completed").strip() != "1" or
+        shell("settings", "get", "global", "device_provisioned").strip() != "1" or
+        shell("settings", "get", "secure", "user_setup_complete").strip() != "1"):
+        return False
+    if shell("settings", "get", "secure", "accessibility_enabled").strip() == "1":
+        return False
+    # Do not dismiss unknown dialogs, app ANRs, consent, or permission prompts.
+    focus = shell("dumpsys", "window", "windows")
+    if not re.search(r"(?m)^\s*mCurrentFocus=Window\{[^\n]*Application Not Responding: com\.google\.android\.apps\.nexuslauncher\}", focus):
+        return False
+    fixture_launcher_recovered = True
+    (OUTPUT / "fixture-launcher-anr.png").write_bytes(adb("exec-out", "screencap", "-p"))
+    (OUTPUT / "fixture-recovery.json").write_text(json.dumps({
+        "source_commit": os.environ.get("SOURCE_SHA", "unknown"),
+        "reason": "confirmed Pixel Launcher ANR before initial app capture",
+        "action": "force-stop exact launcher package in provisioned CI emulator only"
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    shell("am", "force-stop", "com.google.android.apps.nexuslauncher")
+    time.sleep(3)
+    launch()
+    return True
+
 
 
 def adb(*args):
@@ -24,14 +69,16 @@ def shell(*args):
 
 def nodes():
     for _ in range(6):
-        shell("rm", "-f", "/sdcard/dualtouch-window.xml")
-        shell("uiautomator", "dump", "--compressed", "/sdcard/dualtouch-window.xml")
-        raw = adb("exec-out", "cat", "/sdcard/dualtouch-window.xml")
+        if recover_initial_launcher_anr():
+            time.sleep(2)
         try:
+            shell("rm", "-f", "/sdcard/dualtouch-window.xml")
+            shell("uiautomator", "dump", "--compressed", "/sdcard/dualtouch-window.xml")
+            raw = adb("exec-out", "cat", "/sdcard/dualtouch-window.xml")
             tree = ET.fromstring(raw)
             if any(n.get("package") == PACKAGE for n in tree.iter("node")):
                 return tree
-        except ET.ParseError:
+        except (ET.ParseError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             pass
         time.sleep(2)
     (OUTPUT / "diagnostic-screen.png").write_bytes(adb("exec-out", "screencap", "-p"))
@@ -97,6 +144,7 @@ def capture(name):
 
 
 try:
+    prepare_fixture()
     shell("wm", "size", "1080x1920")
     shell("wm", "density", "420")
     shell("cmd", "uimode", "night", "no")

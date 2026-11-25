@@ -31,6 +31,7 @@ class OverlayCaptureRunner : Instrumentation() {
     private lateinit var automation: UiAutomation
     private lateinit var output: File
     private var source = ""
+    private var scenario = ""
     private var stage = "setup"
     private val captures = JSONArray()
     private val observations = JSONArray()
@@ -38,6 +39,7 @@ class OverlayCaptureRunner : Instrumentation() {
     override fun onCreate(arguments: Bundle?) {
         super.onCreate(arguments)
         source = arguments?.getString("source_sha").orEmpty()
+        scenario = arguments?.getString("scenario").orEmpty()
         start()
     }
 
@@ -50,6 +52,7 @@ class OverlayCaptureRunner : Instrumentation() {
         try {
             check(Regex("[a-f0-9]{40}").matches(source)) { "Missing exact source SHA" }
             check(targetContext.packageName == LEFT)
+            check(scenario in setOf("countdown", "calibration")) { "Unknown scenario" }
             automation = checkNotNull(getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES))
             val info = checkNotNull(automation.serviceInfo)
             info.flags = info.flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS
@@ -79,6 +82,7 @@ class OverlayCaptureRunner : Instrumentation() {
             }
             val report = JSONObject()
                 .put("source_commit", source)
+                .put("scenario", scenario)
                 .put("android_api", android.os.Build.VERSION.SDK_INT)
                 .put("environment", "disposable Android emulator; real probe app windows")
                 .put("physical_foldable_verified", false)
@@ -561,8 +565,10 @@ class OverlayCaptureRunner : Instrumentation() {
         stage = "$name / emergency stop"
         // Never start another scenario until the controller and any armed input
         // have actually stopped. No automatic reactivation of a failed run.
+        recordOverlayInventory("before_emergency_stop_$name")
         shell("input keyevent KEYCODE_VOLUME_DOWN")
-        waitFor("all controller overlays removed by volume-down") {
+        try {
+            waitFor("all controller overlays removed by volume-down") {
             automation.windows.none { window ->
                 if (window.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) false
                 else {
@@ -571,26 +577,25 @@ class OverlayCaptureRunner : Instrumentation() {
                     finally { root?.recycle() }
                 }
             }
+            }
+        } catch (failure: Exception) {
+            recordOverlayInventory("emergency_stop_failed_$name")
+            observations.put(JSONObject().put("scenario", name)
+                .put("emergency_stop_overlay_removed", false)
+                .put("thumb_state", visibleNodes().firstOrNull {
+                    it.pkg == APP && it.description.startsWith("DualTouch Thumb.")
+                }?.description ?: JSONObject.NULL))
+            throw failure
         }
+        recordOverlayInventory("after_emergency_stop_$name")
         requireSplit()
         observations.put(JSONObject().put("scenario", name).put("emergency_stop_overlay_removed", true))
         if (name == "countdown") screenshot("QA-stopped", "emergency stop; both probe windows remain", false)
     }
 
-    private fun restartForIndependentCalibration() {
-        stage = "calibration session / return to controller"
-        check(serviceEnabledInSettings())
-        returnToControllerHome()
-        awaitNode("connected permission on home") { it.pkg == APP && it.text == "연결됨" }
-        tapWithScroll(APP, "플로팅 표시")
-        thumb("연결")
-        stage = "calibration session / real split"
-        if (!splitVisible()) openSplit()
-        requireSplit()
-        connectAndOpenReadyMenu(captureDesigns = false)
-    }
-
     private fun runCapture() {
+        // Each scenario runs in its own disposable emulator. A failed
+        // emergency stop never permits another session in the same emulator.
         stage = "permission flow"
         configureService()
         stage = "real split"
@@ -599,30 +604,25 @@ class OverlayCaptureRunner : Instrumentation() {
 
         val errors = mutableListOf<String>()
         try {
-            captureCountdown()
-            observations.put(JSONObject().put("scenario", "countdown").put("capture_completed", true))
+            when (scenario) {
+                "countdown" -> captureCountdown()
+                "calibration" -> captureCalibration()
+                else -> error("Unknown scenario")
+            }
+            observations.put(JSONObject().put("scenario", scenario).put("capture_completed", true))
         } catch (failure: Exception) {
             val message = "$stage: ${failure.message ?: failure.javaClass.simpleName}"
             errors.add(message)
-            observations.put(JSONObject().put("scenario", "countdown").put("error", message))
-            runCatching { screenshot("diagnostic-countdown", "diagnostic only; not a design match", false) }
-        } finally {
-            stopScenario("countdown")
+            observations.put(JSONObject().put("scenario", scenario).put("error", message))
+            runCatching { screenshot("diagnostic-$scenario", "diagnostic only; not a design match", false) }
         }
-
-        // A separate explicit setup/approval for visual calibration, not a
-        // retry of the previous run. Preserve every failed scenario in the report.
-        restartForIndependentCalibration()
         try {
-            captureCalibration()
-            observations.put(JSONObject().put("scenario", "calibration").put("capture_completed", true))
+            stopScenario(scenario)
         } catch (failure: Exception) {
             val message = "$stage: ${failure.message ?: failure.javaClass.simpleName}"
             errors.add(message)
-            observations.put(JSONObject().put("scenario", "calibration").put("error", message))
-            runCatching { screenshot("diagnostic-calibration", "diagnostic only; not a design match", false) }
-        } finally {
-            stopScenario("calibration")
+            observations.put(JSONObject().put("scenario", scenario).put("stop_error", message))
+            runCatching { screenshot("diagnostic-stop-failure", "diagnostic only; not a design match", false) }
         }
         observations.put(JSONObject().put("DES-04", "not captured: opening controller home can invalidate the approved pair"))
         stage = "scenario results"

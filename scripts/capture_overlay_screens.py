@@ -13,14 +13,14 @@ OUT.mkdir(parents=True, exist_ok=True)
 PKG = "com.hebi.dualtouch.probeleft"
 RUNNER = PKG + ".test/" + PKG + ".OverlayCaptureRunner"
 SOURCE = os.environ["SOURCE_SHA"]
+SCENARIO = os.environ["OVERLAY_SCENARIO"]
 SDK_SETUP = "com.google.android.googlesdksetup"
-EXPECTED = {
-    "DES-06-thumb-ready.png", "DES-07-thumb-menu.png",
-    "DES-08-pair-selection.png", "DES-09-thumb-running.png",
-    "DES-10-calibration.png",
-}
+COMMON = {"DES-06-thumb-ready.png", "DES-07-thumb-menu.png", "DES-08-pair-selection.png"}
+SCENARIO_CAPTURE = {"countdown": "DES-09-thumb-running.png", "calibration": "DES-10-calibration.png"}
+EXPECTED = COMMON | {SCENARIO_CAPTURE[SCENARIO]}
 ALLOWED = EXPECTED | {"QA-stopped.png", "diagnostic-failure.png",
-                      "diagnostic-countdown.png", "diagnostic-calibration.png"}
+                      "diagnostic-countdown.png", "diagnostic-calibration.png",
+                      "diagnostic-stop-failure.png"}
 
 
 def adb(*args, timeout=45):
@@ -91,6 +91,7 @@ def collect():
     report["checkout_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
     (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     assert report["source_commit"] == SOURCE, "Capture source SHA differs"
+    assert report["scenario"] == SCENARIO, "Capture scenario differs"
     assert report["physical_foldable_verified"] is False
     assert report["touch_mirroring_verified"] is False
     verified = set()
@@ -128,7 +129,8 @@ try:
     adb("shell", "wm", "dismiss-keyguard")
     prepare_fixture()
     result = subprocess.run(
-        ["adb", "shell", "am", "instrument", "-w", "-r", "-e", "source_sha", SOURCE, RUNNER],
+        ["adb", "shell", "am", "instrument", "-w", "-r",
+         "-e", "source_sha", SOURCE, "-e", "scenario", SCENARIO, RUNNER],
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=480, check=False,
     )
     (OUT / "instrumentation.txt").write_bytes(result.stdout)
@@ -137,7 +139,7 @@ try:
 except Exception as error:
     failure = str(error)
     (OUT / "host-failure.json").write_text(json.dumps({
-        "source_commit": SOURCE, "error": failure, "physical_foldable_verified": False,
+        "source_commit": SOURCE, "scenario": SCENARIO, "error": failure, "physical_foldable_verified": False,
         "touch_mirroring_verified": False,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
     # Keep a failure report without reclassifying a blocked state as a design capture.
