@@ -13,6 +13,12 @@ enum class WindowLayer {
     OTHER,
 }
 
+// Application identity and accessibility overlay ownership are the only
+// package identities consumed by the window safety policies. All layers still
+// participate in geometry, obstruction and layer checks.
+internal fun WindowLayer.requiresPackageIdentity(): Boolean =
+    this == WindowLayer.APPLICATION || this == WindowLayer.ACCESSIBILITY
+
 data class ObservedWindow(
     val layer: WindowLayer,
     val packageName: String?,

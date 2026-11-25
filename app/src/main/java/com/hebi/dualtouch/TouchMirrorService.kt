@@ -52,6 +52,7 @@ import com.hebi.dualtouch.core.SplitWorkArea
 import com.hebi.dualtouch.core.WindowPair
 import com.hebi.dualtouch.core.WindowTap
 import com.hebi.dualtouch.core.inspectInputTree
+import com.hebi.dualtouch.core.requiresPackageIdentity
 
 enum class MirrorMode {
     THUMB,
@@ -914,16 +915,33 @@ class TouchMirrorService : AccessibilityService() {
                 AccessibilityWindowInfo.TYPE_WINDOW_CONTROL -> WindowLayer.WINDOW_CONTROL
                 else -> WindowLayer.OTHER
             }
-            val root = window.getRoot(0)
-            val input = if (layer == WindowLayer.APPLICATION) {
-                inspectInputTree(
-                    root, INPUT_NODE_LIMIT,
-                    isSensitive = { it.isPassword || (it.isEditable && it.isFocused) },
-                    shouldContinue = { SystemClock.uptimeMillis() < deadline },
-                    children = { node ->
-                        (0 until node.childCount).asSequence().map { node.getChild(it, 0) }.iterator()
-                    },
+            // Avoid IPC for package identities never used by either policy.
+            // Keep every window in the geometry/obstruction snapshot.
+            val budgetAvailable = SystemClock.uptimeMillis() < deadline
+            val root = if (layer.requiresPackageIdentity() && budgetAvailable) {
+                window.getRoot(
+                    if (layer == WindowLayer.APPLICATION)
+                        AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID
+                    else 0
                 )
+            } else null
+            val input = if (layer == WindowLayer.APPLICATION) {
+                if (!budgetAvailable || SystemClock.uptimeMillis() >= deadline) {
+                    InputInspection.TIME_BUDGET_EXCEEDED
+                } else {
+                    // Prefetch reduces individual remote node lookups. Still inspect
+                    // every reachable node within the same limit and deadline.
+                    inspectInputTree(
+                        root, INPUT_NODE_LIMIT,
+                        isSensitive = { it.isPassword || (it.isEditable && it.isFocused) },
+                        shouldContinue = { SystemClock.uptimeMillis() < deadline },
+                        children = { node ->
+                            (0 until node.childCount).asSequence().map {
+                                node.getChild(it, AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID)
+                            }.iterator()
+                        },
+                    )
+                }
             } else InputInspection.CLEAR
             ReadWindow(window, ObservedWindow(
                 layer = layer,

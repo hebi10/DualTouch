@@ -387,19 +387,48 @@ class OverlayCaptureRunner : Instrumentation() {
             .put("design_state_verified", designMatch))
     }
 
+    private fun awaitPairApprovalAfterSearch(): VisibleNode {
+        val directions = setOf("왼쪽 직접 → 오른쪽 자동 연결", "위쪽 직접 → 아래쪽 자동 연결")
+        repeat(3) { attempt ->
+            requireSplit()
+            val result = awaitNode("pair selection outcome", 12000) {
+                it.pkg == APP && (
+                    it.text in directions ||
+                    it.text.contains("화면 구조 검사 시간이 초과되었습니다.") ||
+                    it.text.contains("앱의 화면 구조를 읽을 수 없어")
+                )
+            }
+            if (result.text in directions) {
+                observations.put(JSONObject().put("candidate_search_attempt", attempt + 1)
+                    .put("candidate_outcome", "direction_visible"))
+                return result
+            }
+            val timeout = result.text.contains("화면 구조 검사 시간이 초과되었습니다.")
+            observations.put(JSONObject().put("candidate_search_attempt", attempt + 1)
+                .put("candidate_outcome", if (timeout) "inspection_timeout" else "inspection_incomplete"))
+            // Retry only an explicit pre-approval timeout through the existing UI.
+            // Never re-arm input or accept incomplete/sensitive/unknown windows.
+            if (!timeout || attempt == 2) error("Candidate inspection blocked: " + result.text)
+            SystemClock.sleep(1500)
+            requireSplit()
+            tapText(APP, "다시 검색")
+        }
+        error("No actual pair approval available")
+    }
+
     private fun runCapture() {
         stage = "permission flow"
         configureService()
         stage = "real split"
         openSplit()
         stage = "app connection"
+        SystemClock.sleep(1500)
+        requireSplit()
         tap(thumb("연결"))
         tapText(APP, "좌/우 선택 · 앱 연결")
         awaitNode("pair selection title") { it.pkg == APP && it.text == "현재 분할 앱 연결" }
         requireSplit()
-        val approval = awaitNode("explicit direction approval") {
-            it.pkg == APP && it.text in setOf("왼쪽 직접 → 오른쪽 자동 연결", "위쪽 직접 → 아래쪽 자동 연결")
-        }
+        val approval = awaitPairApprovalAfterSearch()
         val pairNodes = visibleNodes().filter { it.pkg == APP }
         check(pairNodes.any { it.text.contains(LEFT) } && pairNodes.any { it.text.contains(RIGHT) }) {
             "The approval panel must identify both actual probe packages"

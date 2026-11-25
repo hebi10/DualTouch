@@ -142,4 +142,22 @@ class WindowSafetyPolicyTest {
         assertEquals(InputInspection.SENSITIVE,
             inspectInputTree(0, 3, { it == 1 }) { listOf<Int?>(null, 1).iterator() })
     }
+
+    @Test fun onlyAppsAndAccessibilityOverlaysRequirePackageIdentity() {
+        assertEquals(
+            setOf(WindowLayer.APPLICATION, WindowLayer.ACCESSIBILITY),
+            WindowLayer.values().filter { it.requiresPackageIdentity() }.toSet()
+        )
+    }
+
+    @Test fun absentNonIdentityMetadataNeverRemovesObstructionOrUnknownOverlayProtection() {
+        val thinBar = ObservedWindow(WindowLayer.SYSTEM, null, ScreenRect(0, 0, 1000, 24))
+        assertEquals(assessment().issue, assessment(thinBar).issue)
+        val unknownOverlay = ObservedWindow(
+            WindowLayer.ACCESSIBILITY, null, ScreenRect(20, 80, 60, 120)
+        )
+        assertEquals(SafetyIssue.ACCESSIBILITY_OVERLAY, assessment(unknownOverlay).issue)
+        val unknown = ObservedWindow(WindowLayer.OTHER, null, ScreenRect(20, 80, 60, 120))
+        assertEquals(SafetyIssue.UNKNOWN_WINDOW, assessment(unknown).issue)
+    }
 }
