@@ -184,7 +184,7 @@ class TouchMirrorService : AccessibilityService() {
 
     private fun connectVisibleApps(side: TouchSide, displayedPair: AppPairApproval): SafetyIssue {
         if (!armed || mode != MirrorMode.THUMB) return SafetyIssue.UNAPPROVED_PAIR
-        if (captureFaulted) return SafetyIssue.CAPTURE_UNAVAILABLE
+        if (captureFaulted || !environmentAllowsInput()) return SafetyIssue.CAPTURE_UNAVAILABLE
         if (gestureFlight.pending) return if (gestureFlight.expired) SafetyIssue.INPUT_RECOVERY_REQUIRED else SafetyIssue.INPUT_FINISHING
         val environment = readWindowEnvironment()
             ?: return SafetyIssue.INPUT_INSPECTION_INCOMPLETE
@@ -197,6 +197,7 @@ class TouchMirrorService : AccessibilityService() {
             statusText = "연결 불가: " + WindowSafetyPolicy.message(assessment.issue)
             return assessment.issue
         }
+        if (!armed || captureFaulted || !environmentAllowsInput()) return SafetyIssue.CAPTURE_UNAVAILABLE
         dispatchGeneration.invalidate()
         dispatching = false
         thumbRunning = false

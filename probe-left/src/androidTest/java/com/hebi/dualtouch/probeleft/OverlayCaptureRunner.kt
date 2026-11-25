@@ -62,6 +62,9 @@ class OverlayCaptureRunner : Instrumentation() {
                     observations.put(JSONObject().put("failed_stage", stage)
                         .put("fixture_foreground", activeApplicationPackage()?.takeIf { it in setOf(APP, SETTINGS, LEFT, RIGHT) } ?: "other_or_unknown")
                         .put("service_enabled_in_settings", serviceEnabledInSettings())
+                        .put("controller_thumb_state", visibleNodes().firstOrNull {
+                            it.pkg == APP && it.description.startsWith("DualTouch Thumb.")
+                        }?.description ?: JSONObject.NULL)
                         .put("fixture_visible_labels", JSONArray(visibleNodes()
                             .filter { it.pkg in setOf(APP, SETTINGS, LEFT, RIGHT) }
                             .map { it.text }.filter { it.isNotBlank() }.distinct().take(60))))
@@ -482,7 +485,22 @@ class OverlayCaptureRunner : Instrumentation() {
         tap(approval)
 
         stage = "ready thumb and menu"
-        thumb("대기")
+        val result = awaitNode("actual approval result", 15000) {
+            it.pkg == APP && (
+                (it.description.startsWith("DualTouch Thumb.") &&
+                    (it.text == "오류" || (it.text == "대기" && it.description.contains("연결됨 · 실행 대기"))))
+                || it.text == "현재 분할 앱 연결"
+            )
+        }
+        if (result.text != "대기") {
+            recordOverlayInventory("after_explicit_approval_blocked")
+            observations.put(JSONObject().put("approval_outcome", "blocked")
+                .put("controller_thumb_state", visibleNodes().firstOrNull {
+                    it.pkg == APP && it.description.startsWith("DualTouch Thumb.")
+                }?.description ?: JSONObject.NULL))
+            error("Explicit approval did not reach ready state: " + result.description.ifBlank { result.text })
+        }
+        observations.put(JSONObject().put("approval_outcome", "ready"))
         requireSplit()
         screenshot("DES-06-thumb-ready", "approved pair; input not running")
         tap(thumb("대기"))

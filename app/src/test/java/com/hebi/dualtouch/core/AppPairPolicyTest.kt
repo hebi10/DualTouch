@@ -199,4 +199,23 @@ class AppPairPolicyTest {
         )
         assertTrue(AppPairPolicy.select(windows, owner, workArea).allowed)
     }
+    @Test fun displayedApprovalStillRequiresFreshSafetyAfterMenuRemoval() {
+        val apps = pair()
+        val ownMenu = ObservedWindow(WindowLayer.ACCESSIBILITY, owner, ScreenRect(20, 80, 300, 400))
+        val approval = AppPairApproval.fromPair(select(apps + ownMenu).pair!!)
+        assertTrue(verify(apps, approval).allowed)
+        assertEquals(SafetyIssue.ACCESSIBILITY_OVERLAY,
+            verify(apps + ownMenu.copy(packageName = null), approval).issue)
+        assertEquals(SafetyIssue.ACCESSIBILITY_OVERLAY,
+            verify(apps + ownMenu.copy(packageName = "com.example.other"), approval).issue)
+    }
+
+    @Test fun displayedApprovalCannotBeAppliedAfterControllerReplacesOneWindow() {
+        val apps = pair()
+        val approval = AppPairApproval.fromPair(select(apps).pair!!)
+        assertEquals(SafetyIssue.PROTECTED_APP,
+            verify(listOf(apps.first(), apps.last().copy(packageName = owner)), approval).issue)
+        assertEquals(SafetyIssue.PAIR_CHANGED,
+            verify(listOf(apps.first(), apps.last().copy(windowId = 42)), approval).issue)
+    }
 }

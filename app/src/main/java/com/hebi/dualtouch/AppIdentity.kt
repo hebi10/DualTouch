@@ -38,16 +38,18 @@ internal fun appIdentityRow(context: Context, palette: UiPalette, position: Stri
     } catch (_: RuntimeException) {
         null
     }
-    if (drawable != null) {
-        row.addView(ImageView(context).apply {
+    val icon = if (drawable != null) {
+        ImageView(context).apply {
             setImageDrawable(drawable)
             importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, LinearLayout.LayoutParams(UiKit.dp(context, 36), UiKit.dp(context, 36)).apply {
-            marginEnd = UiKit.dp(context, 10)
-        })
-    }
+        }
+    } else UiKit.iconView(context, LineIcon.SPLIT, palette.text, 28)
+    row.addView(icon, LinearLayout.LayoutParams(UiKit.dp(context, 36), UiKit.dp(context, 36)).apply {
+        marginEnd = UiKit.dp(context, 10)
+    })
     val text = UiKit.column(context)
-    UiKit.add(text, UiKit.text(context, palette, "$position · ${appDisplayLabel(context, packageName)}", 15f, true))
+    val label = appDisplayLabel(context, packageName)
+    UiKit.add(text, UiKit.text(context, palette, if (label == packageName) "$position 앱" else "$position · $label", 15f, true))
     UiKit.add(text, UiKit.text(context, palette, packageName, 12f, secondary = true), topDp = 3)
     row.addView(text, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
     return row
