@@ -151,6 +151,11 @@ jobs:
         run: |
           GOBIN="$RUNNER_TEMP/grpc-tools" go install github.com/fullstorydev/grpcurl/cmd/grpcurl@v1.9.4
           echo "$RUNNER_TEMP/grpc-tools" >> "$GITHUB_PATH"
+      - name: Restrict emulator gRPC access to loopback
+        if: matrix.scenario != 'home-return'
+        run: |
+          sudo iptables --wait 5 --insert INPUT ! --in-interface lo --protocol tcp --dport 8556 --jump DROP
+          sudo ip6tables --wait 5 --insert INPUT ! --in-interface lo --protocol tcp --dport 8556 --jump DROP
       - name: Capture actual split and overlay states in an isolated emulator
         uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d
         env:
@@ -161,6 +166,8 @@ jobs:
           target: google_apis
           arch: x86_64
           profile: pixel_6
+          # The host sends a virtual hardware key for the emergency-stop check.
+          enable-hw-keyboard: ${{ matrix.scenario != 'home-return' }}
           emulator-options: >-
             -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
             ${{ matrix.scenario != 'home-return' && '-grpc 8556' || '' }}

@@ -653,7 +653,13 @@ class OverlayCaptureRunner : Instrumentation() {
         requireSplit()
         if (captureDesigns) screenshot("DES-06-thumb-ready", "approved pair; input not running")
         tap(thumb("대기"))
-        awaitNode("ready menu") { it.pkg == APP && it.text.startsWith("연결됨 · 실행 대기") }
+        val menu = awaitNode("ready menu or safety block") {
+            it.pkg == APP && (
+                it.text.startsWith("연결됨 · 실행 대기") ||
+                (it.text == "오류" && it.description.startsWith("DualTouch Thumb."))
+            )
+        }
+        check(menu.text != "오류") { "Ready menu blocked: ${menu.description}" }
         awaitNode("execute button") { it.pkg == APP && it.text == "실행" }
         awaitNode("calibration button") { it.pkg == APP && it.text == "영점 조절" }
         requireSplit()
