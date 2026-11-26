@@ -407,11 +407,16 @@ class OverlayCaptureRunner : Instrumentation() {
         // Isolated emulator, before any accessibility permission is granted.
         // Do not dismiss arbitrary dialogs or alter actual permission settings.
         if (shell("getprop ro.kernel.qemu").trim() != "1" || serviceEnabledInSettings()) return false
-        val focus = shell("dumpsys window windows")
         val launcherAnr = Regex(
             """(?m)^\s*mCurrentFocus=Window\{[^\n]*Application Not Responding: com\.google\.android\.apps\.nexuslauncher\}"""
         )
-        if (!launcherAnr.containsMatchIn(focus)) return false
+        val focusedInputLauncherAnr = Regex(
+            """(?m)^\s*FocusedWindow:\s+name='Window\{[^\n]*Application Not Responding: com\.google\.android\.apps\.nexuslauncher\}'""",
+        )
+        val hasFocusedLauncherAnr = launcherAnr.containsMatchIn(shell("dumpsys window windows")) ||
+            launcherAnr.containsMatchIn(shell("dumpsys activity activities")) ||
+            focusedInputLauncherAnr.containsMatchIn(shell("dumpsys input"))
+        if (!hasFocusedLauncherAnr) return false
         screenshot("diagnostic-launcher-anr", "confirmed launcher ANR before permission; not a design match", false)
         shell("am force-stop com.google.android.apps.nexuslauncher")
         SystemClock.sleep(1800)
