@@ -13,6 +13,12 @@ enum class WindowLayer {
     OTHER,
 }
 
+// Application identity and accessibility overlay ownership are the only
+// package identities consumed by the window safety policies. All layers still
+// participate in geometry, obstruction and layer checks.
+internal fun WindowLayer.requiresPackageIdentity(): Boolean =
+    this == WindowLayer.APPLICATION || this == WindowLayer.ACCESSIBILITY
+
 data class ObservedWindow(
     val layer: WindowLayer,
     val packageName: String?,
@@ -64,6 +70,13 @@ data class SafetyAssessment(
 }
 
 object WindowSafetyPolicy {
+    // A completed tree traversal does not authorize input after the complete
+    // window-read budget has elapsed. Preserve actual unsafe/incomplete
+    // reasons rather than labeling them as retryable timeout failures.
+    internal fun enforceReadDeadline(assessment: SafetyAssessment, expired: Boolean): SafetyAssessment =
+        if (expired && assessment.allowed) SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_TIMEOUT)
+        else assessment
+
     private val allowedPackages = setOf(TestPackages.LEFT, TestPackages.RIGHT)
 
     fun inspect(

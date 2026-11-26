@@ -43,4 +43,20 @@ class AppearanceRulesTest {
         assertEquals(0xFF111111.toInt(),
             AppearanceRules.readableTextColor(0xFFFFFFFF.toInt()))
     }
+    @Test fun defaultThumbColorIsRepresentedExactlyInTheBlackChip() {
+        val initial = TouchAppearance().thumbColor
+        val black = TouchColors.choices.first()
+        assertEquals(8, TouchColors.choices.size)
+        assertEquals(initial, TouchColors.displayChoice(black, initial, true).argb)
+        assertEquals("기본 검정", TouchColors.displayChoice(black, initial, true).title)
+        assertEquals(black, TouchColors.displayChoice(black, initial, false))
+    }
+
+    @Test fun customBlackAndOtherColorsKeepTheirOriginalValues() {
+        val black = TouchColors.choices.first()
+        val blue = TouchColors.choices.first { it.title == "파랑" }
+        assertEquals(black, TouchColors.displayChoice(black, black.argb, true))
+        assertEquals(black, TouchColors.displayChoice(black, blue.argb, true))
+        assertEquals(blue, TouchColors.displayChoice(blue, TouchAppearance().thumbColor, true))
+    }
 }

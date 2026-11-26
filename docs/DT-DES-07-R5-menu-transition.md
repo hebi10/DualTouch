@@ -1,0 +1,11 @@
+# DT-DES-07-R5 — Keep menu input paused during pair selection
+
+R4 CI 45549439032: build/test and ordinary screenshot jobs passed. Provisioned emulator readiness passed, actual onboarding, explicit service confirmation, return to connected home, Thumb and real disjoint split probe windows passed. The report shows a split at 1680x1440 (left 0..827, right 847..1679). At pair selection, the actual UI displayed "다른 접근성 오버레이가 있어 중지합니다." with both test counters zero. No successful DES-06~10 capture. The runner originally classified only timeout/incomplete inspection, hence its timeout instead of the actual overlay rejection.
+
+Production code review found openPairSelection removed the existing menu immediately before inspecting windows, and closeMenu notified the service of unpause before the replacement paused it again. A transient rootless removed window is a plausible explanation, not a confirmed cause. The app continues to reject unknown or foreign accessibility overlay owners. No exemption based on bounds, package guess, fixture identity, or missing roots.
+
+Correction: notify pause before the candidate check; inspect while the existing menu is attached; remove the menu without intermediate unpause; render the replacement panel. If the session has stopped (Thumb disappeared), do not create a new panel. The existing onConnectApps path revalidates the actual approved pair and safety constraints on explicit user approval. No input capture or dispatch policy, permission setting, inspection limit, or time budget changed.
+
+Fixture instrumentation records overlay type/id/layer/bounds and coarse owner classification from its own accessibility observer before selection and on rejection; it explicitly recognizes the existing foreign-overlay error and fails closed without retrying it. The fixture report is not proof of the controller service's own view of windows. No real user app names or screen text logging is added to production.
+
+New CI required before any runtime claim; because production menu transition logic changed, review runtime safety and subsequent physical-device QA. No merge, Play publishing, signing or readiness update. DES-04 remains separate.

@@ -199,4 +199,57 @@ class AppPairPolicyTest {
         )
         assertTrue(AppPairPolicy.select(windows, owner, workArea).allowed)
     }
+    @Test fun displayedApprovalStillRequiresFreshSafetyAfterMenuRemoval() {
+        val apps = pair()
+        val ownMenu = ObservedWindow(WindowLayer.ACCESSIBILITY, owner, ScreenRect(20, 80, 300, 400))
+        val approval = AppPairApproval.fromPair(select(apps + ownMenu).pair!!)
+        assertTrue(verify(apps, approval).allowed)
+        assertEquals(SafetyIssue.ACCESSIBILITY_OVERLAY,
+            verify(apps + ownMenu.copy(packageName = null), approval).issue)
+        assertEquals(SafetyIssue.ACCESSIBILITY_OVERLAY,
+            verify(apps + ownMenu.copy(packageName = "com.example.other"), approval).issue)
+    }
+
+    @Test fun displayedApprovalCannotBeAppliedAfterControllerReplacesOneWindow() {
+        val apps = pair()
+        val approval = AppPairApproval.fromPair(select(apps).pair!!)
+        assertEquals(SafetyIssue.PROTECTED_APP,
+            verify(listOf(apps.first(), apps.last().copy(packageName = owner)), approval).issue)
+        assertEquals(SafetyIssue.PAIR_CHANGED,
+            verify(listOf(apps.first(), apps.last().copy(windowId = 42)), approval).issue)
+    }
+
+    @Test fun deadlineSkippedIdentityIsTimeoutAndNeverApproves() {
+        val (first, second) = pair()
+        val windows = listOf(first, second.copy(packageName = null,
+            inputInspection = InputInspection.TIME_BUDGET_EXCEEDED))
+        val result = select(windows)
+        assertEquals(SafetyIssue.INPUT_INSPECTION_TIMEOUT, result.issue)
+        assertFalse(result.allowed)
+        assertEquals(null, result.pair)
+        val approval = AppPairApproval.fromPair(select(pair()).pair!!)
+        assertFalse(verify(windows, approval).allowed)
+    }
+
+    @Test fun actuallyMissingIdentityRemainsIncompleteEvenWithAnotherTimeout() {
+        val (first, second) = pair()
+        val result = select(listOf(
+            first.copy(packageName = null, inputInspection = InputInspection.UNAVAILABLE),
+            second.copy(packageName = null, inputInspection = InputInspection.TIME_BUDGET_EXCEEDED)
+        ))
+        assertEquals(SafetyIssue.INPUT_INSPECTION_INCOMPLETE, result.issue)
+        assertFalse(result.allowed)
+    }
+
+    @Test fun timeoutNeverOverridesKnownProtectedOrSensitiveApplication() {
+        val (first, second) = pair()
+        val timedOut = second.copy(packageName = null,
+            inputInspection = InputInspection.TIME_BUDGET_EXCEEDED)
+        val protected = select(listOf(first.copy(packageName = owner), timedOut))
+        assertEquals(SafetyIssue.PROTECTED_APP, protected.issue)
+        assertFalse(protected.allowed)
+        val sensitive = select(listOf(first.copy(inputInspection = InputInspection.SENSITIVE), timedOut))
+        assertEquals(SafetyIssue.SENSITIVE_INPUT, sensitive.issue)
+        assertFalse(sensitive.allowed)
+    }
 }

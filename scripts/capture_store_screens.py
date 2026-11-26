@@ -12,6 +12,60 @@ PACKAGE = "com.hebi.dualtouch"
 OUTPUT = Path("qa/store-screenshots")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 records = []
+fixture_launcher_recovered = False
+
+def prepare_fixture():
+    # This script changes display configuration and must only run in disposable CI.
+    assert os.environ.get("GITHUB_ACTIONS") == "true", "CI fixture only"
+    assert shell("getprop", "ro.kernel.qemu").strip() == "1", "Emulator required"
+    deadline = time.monotonic() + 60
+    while True:
+        if (shell("getprop", "sys.boot_completed").strip() == "1" and
+            shell("settings", "get", "global", "device_provisioned").strip() == "1" and
+            shell("settings", "get", "secure", "user_setup_complete").strip() == "1"):
+            break
+        if time.monotonic() >= deadline:
+            raise AssertionError("CI emulator setup did not finish")
+        time.sleep(3)
+    time.sleep(5)
+
+def recover_initial_launcher_anr(activity_dump=None):
+    global fixture_launcher_recovered
+    if records or fixture_launcher_recovered:
+        return False
+    if os.environ.get("GITHUB_ACTIONS") != "true" or shell("getprop", "ro.kernel.qemu").strip() != "1":
+        return False
+    if (shell("getprop", "sys.boot_completed").strip() != "1" or
+        shell("settings", "get", "global", "device_provisioned").strip() != "1" or
+        shell("settings", "get", "secure", "user_setup_complete").strip() != "1"):
+        return False
+    if shell("settings", "get", "secure", "accessibility_enabled").strip() == "1":
+        return False
+    # Do not dismiss unknown dialogs, app ANRs, consent, or permission prompts.
+    pattern = r"(?m)^\s*mCurrentFocus=Window\{[^\n]*Application Not Responding: com\.google\.android\.apps\.nexuslauncher\}"
+    focus = shell("dumpsys", "window", "windows")
+    if not re.search(pattern, focus):
+        # The final activity diagnostic in R11 included the exact focus line;
+        # use that bounded final observation as well, never a generic ANR match.
+        if activity_dump is None or not re.search(pattern, activity_dump):
+            return False
+        # Confirm the focused window is still the exact launcher ANR before
+        # acting on the saved observation. Do not use an old screenshot alone.
+        fresh = shell("dumpsys", "activity", "activities")
+        if not re.search(pattern, fresh):
+            return False
+    fixture_launcher_recovered = True
+    (OUTPUT / "fixture-launcher-anr.png").write_bytes(adb("exec-out", "screencap", "-p"))
+    (OUTPUT / "fixture-recovery.json").write_text(json.dumps({
+        "source_commit": os.environ.get("SOURCE_SHA", "unknown"),
+        "reason": "confirmed Pixel Launcher ANR before initial app capture",
+        "action": "force-stop exact launcher package in provisioned CI emulator only"
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    shell("am", "force-stop", "com.google.android.apps.nexuslauncher")
+    time.sleep(3)
+    launch()
+    return True
+
 
 
 def adb(*args):
@@ -24,19 +78,26 @@ def shell(*args):
 
 def nodes():
     for _ in range(6):
-        shell("rm", "-f", "/sdcard/dualtouch-window.xml")
-        shell("uiautomator", "dump", "--compressed", "/sdcard/dualtouch-window.xml")
-        raw = adb("exec-out", "cat", "/sdcard/dualtouch-window.xml")
+        if recover_initial_launcher_anr():
+            time.sleep(2)
         try:
+            shell("rm", "-f", "/sdcard/dualtouch-window.xml")
+            shell("uiautomator", "dump", "--compressed", "/sdcard/dualtouch-window.xml")
+            raw = adb("exec-out", "cat", "/sdcard/dualtouch-window.xml")
             tree = ET.fromstring(raw)
             if any(n.get("package") == PACKAGE for n in tree.iter("node")):
                 return tree
-        except ET.ParseError:
+        except (ET.ParseError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             pass
         time.sleep(2)
+    activity = shell("dumpsys", "activity", "activities")
     (OUTPUT / "diagnostic-screen.png").write_bytes(adb("exec-out", "screencap", "-p"))
-    (OUTPUT / "diagnostic-activity.txt").write_text(shell("dumpsys", "activity", "activities"))
-    (OUTPUT / "diagnostic-crash.txt").write_text(shell("logcat", "-d", "-b", "crash"))
+    (OUTPUT / "diagnostic-activity.txt").write_text(activity, encoding="utf-8")
+    (OUTPUT / "diagnostic-crash.txt").write_text(shell("logcat", "-d", "-b", "crash"), encoding="utf-8")
+    # Preserve the first failure evidence, then permit the existing one-time
+    # guarded launcher recovery if the ANR appeared during the last dump.
+    if recover_initial_launcher_anr(activity_dump=activity):
+        return nodes()
     raise AssertionError("App accessibility root was unavailable after bounded retries")
 
 
@@ -97,6 +158,7 @@ def capture(name):
 
 
 try:
+    prepare_fixture()
     shell("wm", "size", "1080x1920")
     shell("wm", "density", "420")
     shell("cmd", "uimode", "night", "no")
@@ -105,18 +167,36 @@ try:
     tap("내용을 이해하고 계속")
     home = nodes()
     home_text = [node.get("text", "") for node in home.iter("node")]
-    assert any("01 접근성 권한" in value for value in home_text), "Permission progress is missing"
-    assert any("02 플로팅 컨트롤" in value for value in home_text), "Floating progress is missing"
-    assert any("03 분할 앱 연결" in value for value in home_text), "Pair progress is missing"
+    assert "접근성 권한" in home_text and "설정 필요" in home_text, "Permission progress is missing"
+    assert "플로팅 컨트롤" in home_text and "대기" in home_text, "Floating progress is missing"
+    assert "분할 앱 연결" in home_text and "연결 필요" in home_text, "Pair progress is missing"
     capture("phone-02-home-light")
     tap("표시 설정")
     capture("phone-03-settings-light")
+    shell("input", "swipe", "540", "1550", "540", "450", "450")
+    time.sleep(1)
+    capture("phone-03b-settings-scroll-light")
+    # Capture actual lower settings rather than extrapolating off-screen controls.
+    for _ in range(5):
+        shell("input", "swipe", "540", "1620", "540", "360", "350")
+        time.sleep(0.5)
+    capture("phone-03c-settings-bottom-light")
     launch()
     tap("플로팅 표시")
     capture("phone-04-disclosure-light")
     verify_accessibility_settings()
     tap("분할 화면 안내")
     capture("phone-05-guide-light")
+    launch()
+    tap("오류·중지 안내")
+    capture("phone-05b-help-light")
+    # 1080x2160 at 420dpi approximates the 412x824dp design viewport.
+    shell("wm", "size", "1080x2160")
+    launch()
+    capture("phone-tall-01-home-light")
+    tap("표시 설정")
+    capture("phone-tall-02-settings-light")
+    shell("wm", "size", "1080x1920")
     shell("cmd", "uimode", "night", "yes")
     launch()
     capture("phone-06-home-dark")

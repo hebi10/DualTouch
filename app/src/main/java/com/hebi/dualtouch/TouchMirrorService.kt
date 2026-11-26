@@ -52,6 +52,7 @@ import com.hebi.dualtouch.core.SplitWorkArea
 import com.hebi.dualtouch.core.WindowPair
 import com.hebi.dualtouch.core.WindowTap
 import com.hebi.dualtouch.core.inspectInputTree
+import com.hebi.dualtouch.core.requiresPackageIdentity
 
 enum class MirrorMode {
     THUMB,
@@ -178,17 +179,23 @@ class TouchMirrorService : AccessibilityService() {
     private fun candidateAppPair(): SafetyAssessment {
         val environment = readWindowEnvironment()
             ?: return SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_INCOMPLETE)
-        return AppPairPolicy.select(environment.first.map { it.metadata }, packageName, environment.second)
+        val assessment = AppPairPolicy.select(
+            environment.windows.map { it.metadata }, packageName, environment.workArea
+        )
+        return WindowSafetyPolicy.enforceReadDeadline(assessment, environment.expired)
     }
 
     private fun connectVisibleApps(side: TouchSide, displayedPair: AppPairApproval): SafetyIssue {
         if (!armed || mode != MirrorMode.THUMB) return SafetyIssue.UNAPPROVED_PAIR
-        if (captureFaulted) return SafetyIssue.CAPTURE_UNAVAILABLE
+        if (captureFaulted || !environmentAllowsInput()) return SafetyIssue.CAPTURE_UNAVAILABLE
         if (gestureFlight.pending) return if (gestureFlight.expired) SafetyIssue.INPUT_RECOVERY_REQUIRED else SafetyIssue.INPUT_FINISHING
         val environment = readWindowEnvironment()
             ?: return SafetyIssue.INPUT_INSPECTION_INCOMPLETE
-        val assessment = AppPairPolicy.verify(
-            environment.first.map { it.metadata }, packageName, environment.second, displayedPair,
+        val assessment = WindowSafetyPolicy.enforceReadDeadline(
+            AppPairPolicy.verify(
+                environment.windows.map { it.metadata }, packageName, environment.workArea, displayedPair,
+            ),
+            environment.expired,
         )
         val pair = assessment.pair
         if (!assessment.allowed || pair == null) {
@@ -196,6 +203,7 @@ class TouchMirrorService : AccessibilityService() {
             statusText = "연결 불가: " + WindowSafetyPolicy.message(assessment.issue)
             return assessment.issue
         }
+        if (!armed || captureFaulted || !environmentAllowsInput()) return SafetyIssue.CAPTURE_UNAVAILABLE
         dispatchGeneration.invalidate()
         dispatching = false
         thumbRunning = false
@@ -215,9 +223,15 @@ class TouchMirrorService : AccessibilityService() {
         return SafetyIssue.NONE
     }
 
-    private fun prepareCalibration() {
-        setThumbRunning(false)
-        setCapture(false)
+    private fun prepareCalibration(): SafetyIssue {
+        if (!armed || mode != MirrorMode.THUMB) return SafetyIssue.UNAPPROVED_PAIR
+        if (captureFaulted || !environmentAllowsInput()) return SafetyIssue.CAPTURE_UNAVAILABLE
+        val stopped = setThumbRunning(false)
+        if (stopped != SafetyIssue.NONE) return stopped
+        if (!setCapture(false)) return SafetyIssue.CAPTURE_UNAVAILABLE
+        if (gestureFlight.pending) return if (gestureFlight.expired)
+            SafetyIssue.INPUT_RECOVERY_REQUIRED else SafetyIssue.INPUT_FINISHING
+        return SafetyIssue.NONE
     }
 
     private fun setMenuVisible(visible: Boolean) {
@@ -252,6 +266,9 @@ class TouchMirrorService : AccessibilityService() {
 
     internal val connectedPair: WindowPair?
         get() = activeWindowPair?.takeIf { isFloatingVisible && approvedAppPair?.matches(it) == true }
+
+    internal val connectedSourceSide: TouchSide get() = sourceSide
+    internal val displayedThumbState: ThumbUiState get() = thumbUiState()
 
     private fun thumbUiState(): ThumbUiState = ThumbUiState.resolve(
         connected = connectedPair != null,
@@ -481,7 +498,15 @@ class TouchMirrorService : AccessibilityService() {
         }
         if (!armed || event.action != KeyEvent.ACTION_DOWN || event.repeatCount != 0) return false
         interceptedVolumeDown = event.downTime
+        // Fixed, fixture-only evidence from the real hardware-key callback.
+        if (inspectionDiagnosticsEnabled) android.util.Log.i("DualTouchStopQA", "volume_down_received")
         stop("볼륨 아래 긴급 중지")
+        if (inspectionDiagnosticsEnabled) {
+            val inputOff = !armed && !capturing && !thumbRunning && overlay == null &&
+                !captureFaulted && !gestureFlight.pending &&
+                runCatching { serviceInfo?.motionEventSources == 0 }.getOrDefault(false)
+            android.util.Log.i("DualTouchStopQA", "volume_down_completed input_off=$inputOff")
+        }
         return true
     }
 
@@ -886,19 +911,74 @@ class TouchMirrorService : AccessibilityService() {
         )
     }
 
-    private fun readWindowEnvironment(): Pair<List<ReadWindow>, SplitWorkArea>? = try {
-        val deadline = SystemClock.uptimeMillis() + INSPECTION_BUDGET_MS
-        val snapshot = observeWindows(deadline)
-        val workArea = splitWorkArea()
-        if (SystemClock.uptimeMillis() >= deadline && snapshot.none { it.metadata.inputInspection == InputInspection.TIME_BUDGET_EXCEEDED }) {
-            null
-        } else snapshot to workArea
-    } catch (_: RuntimeException) {
-        null
+    // Numeric timing only, restricted to debuggable emulator builds. No
+    // packages, window identifiers, bounds, text, nodes, or touch data.
+    private val inspectionDiagnosticsEnabled by lazy {
+        (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0 &&
+            android.os.Build.HARDWARE in setOf("ranchu", "goldfish")
+    }
+    private var lastInspectionTimingReportAt = -1_000L
+
+    private enum class InspectionPhase { WINDOWS, APP_ROOT, OVERLAY_ROOT, TREE, WORK_AREA }
+
+    private class InspectionTiming {
+        private val elapsed = LongArray(InspectionPhase.values().size)
+        fun add(phase: InspectionPhase, duration: Long) {
+            elapsed[phase.ordinal] += duration
+        }
+        fun get(phase: InspectionPhase): Long = elapsed[phase.ordinal]
     }
 
-    private fun observeWindows(deadline: Long): List<ReadWindow> {
-        return windows.map { window ->
+    private inline fun <T> InspectionTiming?.measure(phase: InspectionPhase, block: () -> T): T {
+        if (this == null) return block()
+        val start = SystemClock.uptimeMillis()
+        return try { block() } finally { add(phase, SystemClock.uptimeMillis() - start) }
+    }
+
+    private data class ReadEnvironment(
+        val windows: List<ReadWindow>,
+        val workArea: SplitWorkArea,
+        val expired: Boolean,
+    )
+
+    private fun readWindowEnvironment(): ReadEnvironment? {
+        val started = SystemClock.uptimeMillis()
+        val deadline = started + INSPECTION_BUDGET_MS
+        val timing = if (inspectionDiagnosticsEnabled) InspectionTiming() else null
+        var outcome = "exception"
+        return try {
+            val snapshot = observeWindows(deadline, timing)
+            val workArea = timing.measure(InspectionPhase.WORK_AREA) { splitWorkArea() }
+            val treeTimedOut = snapshot.any { it.metadata.inputInspection == InputInspection.TIME_BUDGET_EXCEEDED }
+            val overBudget = SystemClock.uptimeMillis() >= deadline
+            outcome = if (treeTimedOut || overBudget) "timeout" else "complete"
+            // Still evaluate the existing policy to preserve definite unsafe
+            // reasons. No expired read may produce an authorized pair.
+            ReadEnvironment(snapshot, workArea, treeTimedOut || overBudget)
+        } catch (_: RuntimeException) {
+            null
+        } finally {
+            if (timing != null) {
+                val now = SystemClock.uptimeMillis()
+                val total = now - started
+                if ((total >= INSPECTION_BUDGET_MS || outcome == "timeout") &&
+                    now - lastInspectionTimingReportAt >= 250L) {
+                    lastInspectionTimingReportAt = now
+                    val windowsMs = timing.get(InspectionPhase.WINDOWS)
+                    val appRootMs = timing.get(InspectionPhase.APP_ROOT)
+                    val overlayRootMs = timing.get(InspectionPhase.OVERLAY_ROOT)
+                    val treeMs = timing.get(InspectionPhase.TREE)
+                    val workAreaMs = timing.get(InspectionPhase.WORK_AREA)
+                    val otherMs = (total - windowsMs - appRootMs - overlayRootMs - treeMs - workAreaMs).coerceAtLeast(0L)
+                    android.util.Log.i("DualTouchInspection",
+                        "inspection total_ms=$total windows_ms=$windowsMs app_root_ms=$appRootMs overlay_root_ms=$overlayRootMs tree_ms=$treeMs work_area_ms=$workAreaMs other_ms=$otherMs outcome=$outcome")
+                }
+            }
+        }
+    }
+
+    private fun observeWindows(deadline: Long, timing: InspectionTiming?): List<ReadWindow> {
+        return timing.measure(InspectionPhase.WINDOWS) { windows }.map { window ->
             val bounds = Rect()
             window.getBoundsInScreen(bounds)
             val layer = when (window.type) {
@@ -911,16 +991,37 @@ class TouchMirrorService : AccessibilityService() {
                 AccessibilityWindowInfo.TYPE_WINDOW_CONTROL -> WindowLayer.WINDOW_CONTROL
                 else -> WindowLayer.OTHER
             }
-            val root = window.getRoot(0)
+            // Avoid IPC for package identities never used by either policy.
+            // Keep every window in the geometry/obstruction snapshot.
+            val budgetAvailable = SystemClock.uptimeMillis() < deadline
+            val root = if (layer.requiresPackageIdentity() && budgetAvailable) {
+                timing.measure(if (layer == WindowLayer.APPLICATION) InspectionPhase.APP_ROOT else InspectionPhase.OVERLAY_ROOT) {
+                    window.getRoot(
+                        if (layer == WindowLayer.APPLICATION)
+                            AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID
+                        else 0
+                    )
+                }
+            } else null
             val input = if (layer == WindowLayer.APPLICATION) {
-                inspectInputTree(
-                    root, INPUT_NODE_LIMIT,
-                    isSensitive = { it.isPassword || (it.isEditable && it.isFocused) },
-                    shouldContinue = { SystemClock.uptimeMillis() < deadline },
-                    children = { node ->
-                        (0 until node.childCount).asSequence().map { node.getChild(it, 0) }.iterator()
-                    },
-                )
+                if (!budgetAvailable || SystemClock.uptimeMillis() >= deadline) {
+                    InputInspection.TIME_BUDGET_EXCEEDED
+                } else {
+                    // Prefetch reduces individual remote node lookups. Still inspect
+                    // every reachable node within the same limit and deadline.
+                    timing.measure(InspectionPhase.TREE) {
+                        inspectInputTree(
+                            root, INPUT_NODE_LIMIT,
+                            isSensitive = { it.isPassword || (it.isEditable && it.isFocused) },
+                            shouldContinue = { SystemClock.uptimeMillis() < deadline },
+                            children = { node ->
+                                (0 until node.childCount).asSequence().map {
+                                    node.getChild(it, AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID)
+                                }.iterator()
+                            },
+                        )
+                    }
+                }
             } else InputInspection.CLEAR
             ReadWindow(window, ObservedWindow(
                 layer = layer,
@@ -948,13 +1049,15 @@ class TouchMirrorService : AccessibilityService() {
         }
         val environment = readWindowEnvironment()
             ?: return WindowInspection(SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_INCOMPLETE), emptyList(), emptyList())
-        val (snapshots, workArea) = environment
+        val (snapshots, workArea, expired) = environment
         val visible = snapshots.map { it.metadata }
-        val assessment = if (mode == MirrorMode.THUMB) {
+        val assessed = if (mode == MirrorMode.THUMB) {
             AppPairPolicy.verify(visible, packageName, workArea, approvedAppPair)
         } else {
             WindowSafetyPolicy.inspect(visible, packageName, workArea)
         }
+        val assessment = WindowSafetyPolicy.enforceReadDeadline(assessed, expired)
+        if (expired) return WindowInspection(assessment, emptyList(), emptyList())
         return WindowInspection(assessment, snapshots, visible)
     }
 

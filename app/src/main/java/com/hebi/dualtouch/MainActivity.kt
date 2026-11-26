@@ -7,6 +7,10 @@ import android.os.Looper
 import android.content.Intent
 import android.content.res.Configuration
 import com.hebi.dualtouch.core.SplitOrientation
+import com.hebi.dualtouch.core.TouchSide
+import com.hebi.dualtouch.core.InteractionPhase
+import com.hebi.dualtouch.core.WindowPair
+import android.view.View
 import android.os.Bundle
 import android.net.Uri
 import android.content.ActivityNotFoundException
@@ -46,6 +50,12 @@ class MainActivity : Activity() {
     private var pairStatus: TextView? = null
     private var nextStepStatus: TextView? = null
     private var floatingButton: Button? = null
+    private var permissionButton: Button? = null
+    private var stateDetail: TextView? = null
+    private var pairDetails: LinearLayout? = null
+    private var displayedPairKey: Pair<WindowPair, TouchSide>? = null
+    private var lastPermissionState: Boolean? = null
+    private var lastStatusIcon: Pair<LineIcon, Int>? = null
     private var chosenMode: MirrorMode = MirrorMode.DUAL_STROKE
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -97,6 +107,12 @@ class MainActivity : Activity() {
         pairStatus = null
         nextStepStatus = null
         floatingButton = null
+        permissionButton = null
+        stateDetail = null
+        pairDetails = null
+        displayedPairKey = null
+        lastPermissionState = null
+        lastStatusIcon = null
 
         when (page) {
             Page.INTRO -> intro()
@@ -122,8 +138,8 @@ class MainActivity : Activity() {
     }
 
     private fun header(title: String, subtitle: String? = null, back: Boolean = true) {
-        if (back) addAction("← 홈으로", false, top = 0) { go(Page.HOME) }
-        addTitle(title)
+        if (back) UiKit.add(root, UiKit.toolbar(this, palette, title, back = { go(Page.HOME) }))
+        else addTitle(title)
         if (subtitle != null) addBody(subtitle, secondary = true, top = 7)
     }
 
@@ -173,30 +189,88 @@ class MainActivity : Activity() {
         if (view != null && view.text.toString() != value) view.text = value
     }
 
+    private fun updateStatusRow(view: TextView?, label: String, color: Int) {
+        updateText(view, label)
+        view?.setTextColor(color)
+    }
+
     private fun refreshHomeStatus() {
         if (page != Page.HOME) return
         val service = TouchMirrorService.current
         val permission = settings.accessibilityDisclosureAccepted && service != null
         val floating = permission && service?.isFloatingVisible == true
         val pair = if (floating) service?.connectedPair else null
-        updateText(statusLabel, serviceStatus())
-        updateText(permissionStatus, if (permission) "01 접근성 권한 · 연결됨" else "01 접근성 권한 · 설정 필요")
-        updateText(floatingStatus, if (floating) "02 플로팅 컨트롤 · 표시 중" else "02 플로팅 컨트롤 · 대기")
-        val pairText = if (pair == null) {
-            "03 분할 앱 연결 · 연결 필요"
-        } else {
-            val first = if (pair.orientation == SplitOrientation.HORIZONTAL) "왼쪽" else "위쪽"
-            val second = if (pair.orientation == SplitOrientation.HORIZONTAL) "오른쪽" else "아래쪽"
-            "03 분할 앱 연결 · 연결됨\n$first: ${appDisplayLabel(this, pair.left.packageName)}\n$second: ${appDisplayLabel(this, pair.right.packageName)}"
+        val side = service?.connectedSourceSide ?: TouchSide.LEFT
+        val phase = service?.phase
+        val display = if (floating) service?.displayedThumbState else null
+        val status = when {
+            !permission -> "접근성 권한 필요"
+            !floating -> "플로팅 표시 대기"
+            display?.label == "오류" -> "입력 중지"
+            display?.label == "보정" -> "영점 조절 중"
+            pair == null -> "분할 앱 연결 필요"
+            phase == InteractionPhase.ACTIVE -> "실행 중"
+            phase == InteractionPhase.PAUSED -> "일시 중지"
+            else -> "연결됨 · 실행 대기"
         }
-        updateText(pairStatus, pairText)
-        updateText(nextStepStatus, when {
-            !permission -> "다음: 접근성 권한 설정 또는 플로팅 표시를 눌러 권한을 연결하세요."
-            !floating -> "다음: 플로팅 표시를 누르세요."
-            pair == null -> "다음: Android에서 두 앱을 분할한 뒤 Thumb의 앱 연결 메뉴를 누르세요."
-            else -> "다음: Thumb에서 실행 또는 영점 조절을 선택하세요."
+        val statusColor = when {
+            !permission -> palette.warning
+            display?.label == "오류" -> palette.danger
+            pair == null && floating -> palette.warning
+            pair != null -> palette.success
+            else -> palette.text
+        }
+        updateText(statusLabel, status)
+        val statusIcon = when {
+            !permission || display?.label == "오류" || pair == null && floating -> LineIcon.WARNING_BADGE
+            pair != null && display?.label != "보정" && phase != InteractionPhase.PAUSED -> LineIcon.CHECK_BADGE
+            else -> LineIcon.INFO
+        }
+        val iconKey = statusIcon to statusColor
+        if (lastStatusIcon != iconKey) {
+            lastStatusIcon = iconKey
+            statusLabel?.setCompoundDrawablesRelativeWithIntrinsicBounds(UiKit.icon(this, statusIcon, statusColor, 32), null, null, null)
+        }
+        updateText(stateDetail, when {
+            !permission || !floating -> "터치 실행 중지"
+            else -> display?.description ?: "터치 실행 중지"
         })
+        updateStatusRow(permissionStatus, if (permission) "연결됨" else "설정 필요", if (permission) palette.success else palette.warning)
+        updateStatusRow(floatingStatus, if (floating) "표시 중" else "대기", if (floating) palette.success else palette.secondary)
+        updateStatusRow(pairStatus, if (pair != null) "연결됨" else "연결 필요", if (pair != null) palette.success else palette.warning)
+        val key = pair?.let { it to side }
+        if (displayedPairKey != key) {
+            displayedPairKey = key
+            pairDetails?.let { container ->
+                container.removeAllViews()
+                container.visibility = if (pair != null) View.VISIBLE else View.GONE
+                if (pair != null) {
+                    val horizontal = pair.orientation == SplitOrientation.HORIZONTAL
+                    val first = if (horizontal) "왼쪽" else "위쪽"
+                    val second = if (horizontal) "오른쪽" else "아래쪽"
+                    val source = if (side == TouchSide.LEFT) first else second
+                    val target = if (side == TouchSide.LEFT) second else first
+                    val row = UiKit.panePair(this, 8, 0.5f)
+                    UiKit.add(row.primary, appIdentityTile(this, palette, pair.left.packageName, if (side == TouchSide.LEFT) "$first · 직접" else "$first · 자동"))
+                    UiKit.add(row.secondary, appIdentityTile(this, palette, pair.right.packageName, if (side == TouchSide.RIGHT) "$second · 직접" else "$second · 자동"))
+                    UiKit.add(container, row.row)
+                    UiKit.add(container, UiKit.centeredLabel(this, "$source 직접 → $target 자동", palette.text, 13f), topDp = 8)
+                }
+            }
+        }
+        updateText(nextStepStatus, when {
+            !permission -> "접근성 권한을 설정해 주세요."
+            !floating -> "플로팅 표시를 눌러 Thumb를 열어 주세요."
+            pair == null -> "두 앱을 분할한 뒤 Thumb에서 연결하세요."
+            else -> "Thumb에서 실행 또는 영점 조절을 선택하세요."
+        })
+        nextStepStatus?.visibility = if (permission) View.VISIBLE else View.GONE
         updateText(floatingButton, floatingButtonLabel())
+        if (lastPermissionState != permission) {
+            lastPermissionState = permission
+            permissionButton?.visibility = if (permission) View.GONE else View.VISIBLE
+            floatingButton?.let { UiKit.styleAction(it, palette, primary = permission) }
+        }
     }
 
     private fun floatingButtonLabel(): String =
@@ -225,9 +299,53 @@ class MainActivity : Activity() {
         addAction("나중에", false) { finish() }
     }
 
-    private fun home() {
-        header("DualTouch", "실제 분할 앱 연결 · 터치 동기화", false)
+    private fun statusRow(parent: LinearLayout, label: String, kind: LineIcon): TextView {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = UiKit.dp(this@MainActivity, 48)
+            setPadding(UiKit.dp(this@MainActivity, 12), UiKit.dp(this@MainActivity, 6), UiKit.dp(this@MainActivity, 12), UiKit.dp(this@MainActivity, 6))
+        }
+        val icon = UiKit.iconView(this, kind, palette.text, 24)
+        row.addView(icon, LinearLayout.LayoutParams(UiKit.dp(this, 28), UiKit.dp(this, 28)))
+        val title = UiKit.text(this, palette, label, 15f, true)
+        row.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = UiKit.dp(this@MainActivity, 8) })
+        val value = UiKit.text(this, palette, "", 14f, true).apply { gravity = Gravity.END }
+        row.addView(value, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        if (parent.childCount > 0) {
+            parent.addView(View(this).apply { setBackgroundColor(palette.line) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UiKit.dp(this, 1)))
+        }
+        UiKit.add(parent, row)
+        return value
+    }
 
+    private fun helpLink(parent: LinearLayout, label: String, kind: LineIcon, action: () -> Unit) {
+        if (parent.childCount > 0) {
+            parent.addView(View(this).apply { setBackgroundColor(palette.line) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UiKit.dp(this, 1)))
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            minimumHeight = UiKit.dp(this@MainActivity, 48)
+            setPadding(UiKit.dp(this@MainActivity, 12), UiKit.dp(this@MainActivity, 8), UiKit.dp(this@MainActivity, 12), UiKit.dp(this@MainActivity, 8))
+            isClickable = true
+            isFocusable = true
+            setOnClickListener { action() }
+        }
+        row.addView(UiKit.iconView(this, kind, palette.text, 21), LinearLayout.LayoutParams(UiKit.dp(this, 24), UiKit.dp(this, 24)))
+        row.addView(UiKit.text(this, palette, label, 15f, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = UiKit.dp(this@MainActivity, 12) })
+        row.addView(UiKit.iconView(this, LineIcon.CHEVRON, palette.secondary, 18), LinearLayout.LayoutParams(UiKit.dp(this, 18), UiKit.dp(this, 24)))
+        UiKit.add(parent, row)
+    }
+
+    private fun openDisplaySettings() = startActivity(Intent(this, SettingsActivity::class.java))
+
+    private fun home() {
+        if (viewport.widthCategory == WidthCategory.COMPACT) {
+            val padding = UiKit.dp(this, 4)
+            root.setPadding(padding, UiKit.dp(this, 6), padding, UiKit.dp(this, 20))
+        }
+        UiKit.add(root, UiKit.toolbar(this, palette, "DualTouch", trailing = "표시 설정", onTrailing = { openDisplaySettings() }, trailingIcon = LineIcon.GEAR))
         val pageRoot = root
         val primary: LinearLayout
         val secondary: LinearLayout
@@ -242,25 +360,23 @@ class MainActivity : Activity() {
         }
 
         root = primary
-        section("실행 준비 상태", if (viewport.useTwoPanes) 0 else 22)
-        val stateCard = UiKit.card(this, palette, 18)
-        UiKit.add(stateCard, UiKit.text(this, palette, "현재 상태", 13f, secondary = true))
-        statusLabel = UiKit.text(this, palette, serviceStatus(), 17f, true)
-        UiKit.add(stateCard, statusLabel!!, topDp = 8)
-        permissionStatus = UiKit.text(this, palette, "", 14f, true)
-        floatingStatus = UiKit.text(this, palette, "", 14f, true)
-        pairStatus = UiKit.text(this, palette, "", 14f, true)
-        nextStepStatus = UiKit.text(this, palette, "", 13f, secondary = true)
-        listOf(permissionStatus, floatingStatus, pairStatus, nextStepStatus).forEach {
-            UiKit.add(stateCard, requireNotNull(it), topDp = 10)
-        }
+        val stateCard = UiKit.card(this, palette, 14)
+        UiKit.add(stateCard, UiKit.text(this, palette, "현재 상태", 14f, true))
+        statusLabel = UiKit.text(this, palette, "", 21f, true).apply { compoundDrawablePadding = UiKit.dp(this@MainActivity, 12) }
+        UiKit.add(stateCard, requireNotNull(statusLabel), topDp = 8)
+        stateDetail = UiKit.text(this, palette, "", 14f, secondary = true).apply { setPaddingRelative(UiKit.dp(this@MainActivity, 44), 0, 0, 0) }
+        UiKit.add(stateCard, requireNotNull(stateDetail), topDp = 2)
+        pairDetails = UiKit.column(this).apply { visibility = View.GONE }
+        UiKit.add(stateCard, requireNotNull(pairDetails), topDp = 12)
         UiKit.add(root, stateCard, topDp = 10)
-        addAction("접근성 권한 설정", false) { requestAccessibilitySettings() }
+        val readiness = UiKit.column(this).apply { background = UiKit.shape(palette.background, palette.line) }
+        permissionStatus = statusRow(readiness, "접근성 권한", LineIcon.ACCESSIBILITY)
+        floatingStatus = statusRow(readiness, "플로팅 컨트롤", LineIcon.FLOATING)
+        pairStatus = statusRow(readiness, "분할 앱 연결", LineIcon.SPLIT)
+        UiKit.add(root, readiness, topDp = 12)
 
-        section("플로팅 컨트롤")
-        addBody("플로팅 표시를 누르면 원형 Thumb가 나타납니다. " +
-            "앱 두 개를 좌우 또는 상하로 분할한 뒤 Thumb에서 앱을 연결하세요.", secondary = true)
-        floatingButton = addAction(floatingButtonLabel(), top = 14) {
+        permissionButton = addAction("접근성 권한 설정", top = 16) { requestAccessibilitySettings() }
+        floatingButton = addAction(floatingButtonLabel(), top = 8) {
             val currentService = TouchMirrorService.current
             when {
                 !settings.accessibilityDisclosureAccepted || currentService == null -> requestAccessibilitySettings()
@@ -275,34 +391,27 @@ class MainActivity : Activity() {
                 }
             }
         }
-        addAction("표시 설정", false) {
-            startActivity(Intent(this, SettingsActivity::class.java))
-        }
+        addAction("표시 설정", false, top = 8) { openDisplaySettings() }
+        nextStepStatus = UiKit.text(this, palette, "", 13f, secondary = true)
+        UiKit.add(root, requireNotNull(nextStepStatus), topDp = 12)
 
         root = secondary
-        section("사용 준비", if (viewport.useTwoPanes) 0 else 22)
-        card("01 · 실제 앱 두 개 분할",
-            "Android 분할 화면에 원하는 앱 두 개를 좌우 또는 상하로 배치합니다. 동일 앱은 멀티 인스턴스를 지원해야 합니다.")
-        card("02 · 좌/우 앱 연결",
-            "Thumb → 좌/우 선택 · 앱 연결 → 표시된 앱을 확인하고 직접 누를 방향을 승인합니다.")
-        card("03 · 실행·영점",
-            "연결 후 Thumb의 실행을 누릅니다. 영점은 현재 연결된 창과 입력 방향에만 적용됩니다. 볼륨 아래로 긴급 중지할 수 있습니다.")
-        addAction("분할 화면 안내", false) { go(Page.GUIDE) }
-        addAction("접근성 권한 안내", false) { showAccessibilityConsent() }
-        addAction("개인정보처리방침", false) {
+        val links = UiKit.column(this).apply { background = UiKit.shape(palette.background, palette.line) }
+        helpLink(links, "분할 화면 안내", LineIcon.BOOK) { go(Page.GUIDE) }
+        helpLink(links, "접근성 권한 안내", LineIcon.INFO) { showAccessibilityConsent() }
+        helpLink(links, "오류·중지 안내", LineIcon.WARNING) { go(Page.HELP) }
+        helpLink(links, "개인정보처리방침", LineIcon.SHIELD) {
             try {
                 startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(getString(R.string.privacy_policy_url))))
             } catch (_: ActivityNotFoundException) {
                 Toast.makeText(this, "웹 브라우저를 사용할 수 없습니다.", Toast.LENGTH_LONG).show()
             }
         }
-
-        section("기술 검증")
-        card("Android 입력 처리 제한",
-            "실행 중에는 연결된 두 앱에서 짧은 탭만 처리합니다. 연속 탭이 누락될 수 있으며, 스크롤·길게 누르기·멀티터치는 입력을 중지합니다. " +
-                "감지한 키보드·비밀번호·보호 앱에서는 입력을 차단합니다. " +
-                "모든 민감 화면을 판별할 수 없으므로 결제·송금·삭제 등에는 사용하지 마세요.")
-        addAction("오류·중지 안내", false) { go(Page.HELP) }
+        UiKit.add(root, links, topDp = if (viewport.useTwoPanes) 10 else 12)
+        if (viewport.useTwoPanes) {
+            card("사용 준비", "실제 앱 두 개를 Android 분할 화면으로 열고 Thumb에서 앱과 방향을 승인하세요. 영점은 현재 연결과 방향에만 적용됩니다.")
+        }
+        card("안전한 사용", "한 손가락 짧은 탭만 지원합니다. 최대 20초 후 자동 중지, 볼륨 아래 긴급 중지. 연속 입력이 누락될 수 있으며 원래 터치가 취소될 수 있습니다. 결제·송금·삭제 등 민감한 작업에는 사용하지 마세요.", top = 16)
         root = pageRoot
         refreshHomeStatus()
     }

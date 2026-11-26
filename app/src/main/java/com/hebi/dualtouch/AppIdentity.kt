@@ -38,17 +38,40 @@ internal fun appIdentityRow(context: Context, palette: UiPalette, position: Stri
     } catch (_: RuntimeException) {
         null
     }
-    if (drawable != null) {
-        row.addView(ImageView(context).apply {
+    val icon = if (drawable != null) {
+        ImageView(context).apply {
             setImageDrawable(drawable)
             importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
-        }, LinearLayout.LayoutParams(UiKit.dp(context, 36), UiKit.dp(context, 36)).apply {
-            marginEnd = UiKit.dp(context, 10)
-        })
-    }
+        }
+    } else UiKit.iconView(context, LineIcon.SPLIT, palette.text, 28)
+    row.addView(icon, LinearLayout.LayoutParams(UiKit.dp(context, 36), UiKit.dp(context, 36)).apply {
+        marginEnd = UiKit.dp(context, 10)
+    })
     val text = UiKit.column(context)
-    UiKit.add(text, UiKit.text(context, palette, "$position · ${appDisplayLabel(context, packageName)}", 15f, true))
+    val label = appDisplayLabel(context, packageName)
+    UiKit.add(text, UiKit.text(context, palette, if (label == packageName) "$position 앱" else "$position · $label", 15f, true))
     UiKit.add(text, UiKit.text(context, palette, packageName, 12f, secondary = true), topDp = 3)
     row.addView(text, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
     return row
+}
+
+
+internal fun appIdentityTile(context: Context, palette: UiPalette, packageName: String, role: String): LinearLayout {
+    val tile = UiKit.column(context, 8).apply {
+        gravity = Gravity.CENTER_HORIZONTAL
+        background = UiKit.shape(palette.background, palette.line)
+    }
+    val application = visibleApplication(context, packageName)
+    val drawable = try { application?.loadIcon(context.packageManager) } catch (_: RuntimeException) { null }
+    if (drawable != null) {
+        tile.addView(ImageView(context).apply {
+            setImageDrawable(drawable)
+            importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
+        }, LinearLayout.LayoutParams(UiKit.dp(context, 32), UiKit.dp(context, 32)))
+    } else {
+        UiKit.add(tile, UiKit.centeredLabel(context, "▥", palette.secondary, 22f))
+    }
+    UiKit.add(tile, UiKit.centeredLabel(context, appDisplayLabel(context, packageName), palette.text, 13f), topDp = 6)
+    UiKit.add(tile, UiKit.centeredLabel(context, role, palette.secondary, 12f), topDp = 4)
+    return tile
 }

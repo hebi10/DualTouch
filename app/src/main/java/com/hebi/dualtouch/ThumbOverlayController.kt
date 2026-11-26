@@ -56,7 +56,7 @@ internal class ThumbOverlayController(
     private val onRunRequest: (Boolean) -> SafetyIssue,
     private val candidateProvider: () -> SafetyAssessment,
     private val onConnectApps: (TouchSide, AppPairApproval) -> SafetyIssue,
-    private val onCalibrationStart: () -> Unit,
+    private val onCalibrationStart: () -> SafetyIssue,
     private val onCalibrationSaved: (WindowPair, TouchSide, CalibrationOffset) -> Boolean,
     private val onCalibrationReset: (WindowPair, TouchSide) -> Boolean,
     private val onMenuVisibilityChanged: (Boolean) -> Unit,
@@ -75,6 +75,9 @@ internal class ThumbOverlayController(
     private val appearanceSettings = AppearanceSettings(context)
     private val palette: UiPalette get() = UiPalette(context)
     private val displayHandler = Handler(Looper.getMainLooper())
+    private var pendingPairConfirmation: Runnable? = null
+    private var pendingRunRequest: Runnable? = null
+    private var pendingCalibrationExit: Runnable? = null
     private var menuStateLabel: TextView? = null
     private var menuRunButton: Button? = null
     private var menuRunStarts = false
@@ -114,6 +117,12 @@ internal class ThumbOverlayController(
         view.contentDescription = "DualTouch 썸. 누르면 실행·중지, 좌우 방향, 영점 조절 메뉴"
         val layout = params(size, size, x, y)
         configureDrag(view, layout, onMove = { nextX, nextY ->
+            if (calibrating) return@configureDrag
+            if (pendingPairConfirmation != null || pendingRunRequest != null) {
+                cancelPairConfirmation()
+                cancelRunRequest()
+                onMenuVisibilityChanged(false)
+            }
             val screen = safeWindowBounds()
             move(Marker(view, layout),
                 nextX.coerceIn(screen.left,
@@ -137,17 +146,31 @@ internal class ThumbOverlayController(
         val state = stateProvider()
         thumb?.view?.let { view ->
             if (view.text.toString() != state.label) view.text = state.label
-            val description = "DualTouch Thumb. ${state.description}. 누르면 메뉴를 엽니다."
+            val action = if (calibrating) "영점 편집 중에는 메뉴가 잠깁니다." else "누르면 메뉴를 엽니다."
+            val description = "DualTouch Thumb. ${state.description}. $action"
             if (view.contentDescription?.toString() != description) view.contentDescription = description
         }
         menuStateLabel?.let { label ->
             if (label.text.toString() != state.description) label.text = state.description
+            val ready = state.label == "대기" && state.description.startsWith("연결됨")
+            label.setTextColor(if (ready) palette.success else if (state.label == "오류") palette.danger else palette.text)
+            label.compoundDrawablePadding = dp(8)
+            val hasIcon = label.compoundDrawablesRelative[0] != null
+            if (ready != hasIcon) {
+                label.setCompoundDrawablesRelativeWithIntrinsicBounds(
+                    if (ready) UiKit.icon(context, LineIcon.CHECK_BADGE, palette.success, 20) else null,
+                    null, null, null
+                )
+            }
         }
         menuRunButton?.let { button ->
             val unchanged = menuRunStarts == !runningProvider()
             val label = if (!unchanged) "상태 변경 · 메뉴 다시 열기" else if (menuRunStarts) "실행" else "중지"
             if (button.text.toString() != label) button.text = label
-            if (button.isEnabled != unchanged) button.isEnabled = unchanged
+            if (button.isEnabled != unchanged) {
+                button.isEnabled = unchanged
+                UiKit.styleAction(button, palette, primary = unchanged, danger = unchanged && !menuRunStarts)
+            }
         }
     }
 
@@ -159,7 +182,7 @@ internal class ThumbOverlayController(
         }
         red?.let {
             updateMarkerAppearance(it, appearance.markerSizeDp,
-                appearance.directColor, appearance.markerOpacityPercent, "터치")
+                appearance.directColor, appearance.markerOpacityPercent, "직접")
         }
         white?.let {
             updateMarkerAppearance(it, appearance.markerSizeDp,
@@ -214,9 +237,11 @@ internal class ThumbOverlayController(
         if (!calibrating) openMenu()
     }
 
-    fun updateSourceSide(pair: WindowPair?) {
+    fun updateSourceSide(pair: WindowPair?) =
+        positionThumb(pair?.source(sideProvider())?.bounds)
+
+    private fun positionThumb(source: ScreenRect?) {
         val marker = thumb ?: return
-        val source = pair?.source(sideProvider())?.bounds
         val bounds = safeWindowBounds()
         val x = source?.left?.plus(dp(12)) ?: if (sideProvider() == TouchSide.LEFT) {
             bounds.left + dp(24)
@@ -235,6 +260,9 @@ internal class ThumbOverlayController(
     }
 
     fun hide() {
+        cancelCalibrationExit()
+        cancelPairConfirmation()
+        cancelRunRequest()
         displayHandler.removeCallbacks(displayTick)
         menuStateLabel = null
         menuRunButton = null
@@ -252,22 +280,31 @@ internal class ThumbOverlayController(
 
     private fun openMenu() {
         if (menu != null || calibrating) return
+        cancelCalibrationExit()
+        cancelPairConfirmation()
+        cancelRunRequest()
         onMenuVisibilityChanged(true)
+        if (thumb == null) return
         val column = panel()
         menuStateLabel = TextView(context).apply {
             text = stateProvider().description
             textSize = 14f
-            setTextColor(palette.text)
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            setTextColor(if (stateProvider().label == "대기") palette.success else palette.text)
             setPadding(dp(10), dp(8), dp(10), dp(8))
         }.also { column.addView(it) }
         val requestedStart = !runningProvider()
         menuRunStarts = requestedStart
-        menuRunButton = UiKit.action(context, palette, if (requestedStart) "실행" else "중지", primary = false).apply {
+        menuRunButton = UiKit.action(context, palette, if (requestedStart) "실행" else "중지", primary = true).apply {
+            UiKit.styleAction(this, palette, primary = true, danger = !requestedStart)
             setOnClickListener {
                 if (requestedStart != !runningProvider()) {
                     closeMenu()
+                } else if (requestedStart) {
+                    requestRunAfterMenuRemoval()
                 } else {
-                    when (val issue = onRunRequest(requestedStart)) {
+                    // A stop request remains immediate.
+                    when (val issue = onRunRequest(false)) {
                         SafetyIssue.NONE -> closeMenu()
                         SafetyIssue.UNAPPROVED_PAIR -> openPairSelection()
                         else -> openPairSelection(issue)
@@ -295,14 +332,23 @@ internal class ThumbOverlayController(
      * The user must explicitly approve the current pair AND the input direction.
      */
     private fun openPairSelection(previousIssue: SafetyIssue? = null) {
-        closeMenu()
+        cancelCalibrationExit()
+        cancelPairConfirmation()
+        cancelRunRequest()
+        // Inspect while the current overlay is still attached. Removing it first
+        // can leave a window with no readable root in the framework snapshot.
+        // Keep capture paused across the replacement; approval revalidates the pair.
         onMenuVisibilityChanged(true)
-        val column = panel()
+        if (thumb == null) return
         val snapshot = candidateProvider()
+        closeMenu(notifyVisibility = false)
+        if (thumb == null) return
+        val column = panel()
         val pair = snapshot.pair
         val title = TextView(context).apply {
             text = "현재 분할 앱 연결"
-            textSize = 17f
+            textSize = 18f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
             setTextColor(palette.text)
             setPadding(dp(10), dp(8), dp(10), dp(8))
         }
@@ -320,11 +366,17 @@ internal class ThumbOverlayController(
             val approval = AppPairApproval.fromPair(pair)
             val firstLabel = if (pair.orientation == SplitOrientation.HORIZONTAL) "왼쪽" else "위쪽"
             val secondLabel = if (pair.orientation == SplitOrientation.HORIZONTAL) "오른쪽" else "아래쪽"
-            column.addView(appIdentityRow(context, palette, firstLabel, pair.left.packageName))
-            column.addView(appIdentityRow(context, palette, secondLabel, pair.right.packageName))
             column.addView(UiKit.text(context, palette, "표시된 앱 두 개와 방향을 확인하고 승인해 주세요. 한 손가락 짧은 탭만 지원합니다.", 13f, secondary = true).apply {
-                setPadding(dp(10), dp(6), dp(10), dp(8))
+                setPadding(dp(10), dp(0), dp(10), dp(8))
             })
+            val identities = UiKit.column(context).apply {
+                background = UiKit.shape(palette.surface, palette.line)
+            }
+            UiKit.add(identities, appIdentityRow(context, palette, firstLabel, pair.left.packageName))
+            identities.addView(View(context).apply { setBackgroundColor(palette.line) },
+                LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(1).coerceAtLeast(1)))
+            UiKit.add(identities, appIdentityRow(context, palette, secondLabel, pair.right.packageName))
+            UiKit.add(column, identities, bottomDp = 4)
             addButton(column, if (pair.orientation == SplitOrientation.HORIZONTAL) {
                 "왼쪽 직접 → 오른쪽 자동 연결"
             } else {
@@ -340,26 +392,110 @@ internal class ThumbOverlayController(
                 confirmPair(TouchSide.RIGHT, approval)
             }
         }
-        addButton(column, "다시 검색") { openPairSelection() }
-        addButton(column, "닫기") { closeMenu() }
+        if (safeWindowBounds().width() >= dp(300) && context.resources.configuration.fontScale <= 1.3f) {
+            val actions = UiKit.panePair(context, 8, 0.5f)
+            addButton(actions.primary, "다시 검색") { openPairSelection() }
+            addButton(actions.secondary, "닫기") { closeMenu() }
+            UiKit.add(column, actions.row)
+        } else {
+            addButton(column, "다시 검색") { openPairSelection() }
+            addButton(column, "닫기") { closeMenu() }
+        }
         val at = IntArray(2)
         thumb?.view?.getLocationOnScreen(at)
-        if (!showMenu(column, 316, at[0] + dp(25), at[1])) {
+        if (!showMenu(column, 316, at[0] + (thumb?.view?.width ?: dp(56)) + dp(8), at[1])) {
             onMenuVisibilityChanged(false)
         }
     }
 
-    private fun confirmPair(side: TouchSide, approval: AppPairApproval) {
-        val issue = onConnectApps(side, approval)
-        if (issue == SafetyIssue.NONE) {
-            updateSourceSide(pairProvider().pair)
-            closeMenu()
-        } else {
-            openPairSelection(issue)
+    private fun cancelRunRequest() {
+        pendingRunRequest?.let { displayHandler.removeCallbacks(it) }
+        pendingRunRequest = null
+    }
+
+    private fun requestRunAfterMenuRemoval() {
+        cancelRunRequest()
+        val selectedThumb = thumb ?: return
+        if (menu == null || calibrating || runningProvider()) return
+        onMenuVisibilityChanged(true)
+        if (thumb !== selectedThumb) return
+        closeMenu(notifyVisibility = false)
+        val start = object : Runnable {
+            override fun run() {
+                if (pendingRunRequest !== this) return
+                pendingRunRequest = null
+                if (thumb !== selectedThumb || menu != null || calibrating || runningProvider()) return
+                // This remains an explicit single request. The service must
+                // freshly verify the approved pair, environment and input state.
+                val issue = onRunRequest(true)
+                if (thumb !== selectedThumb) return
+                when (issue) {
+                    SafetyIssue.NONE -> onMenuVisibilityChanged(false)
+                    SafetyIssue.UNAPPROVED_PAIR -> openPairSelection()
+                    else -> openPairSelection(issue)
+                }
+            }
         }
+        pendingRunRequest = start
+        // Input stays paused while the removed menu window leaves the snapshot.
+        displayHandler.postDelayed(start, 300L)
+    }
+
+    private fun cancelPairConfirmation() {
+        pendingPairConfirmation?.let { displayHandler.removeCallbacks(it) }
+        pendingPairConfirmation = null
+    }
+
+    private fun confirmPair(side: TouchSide, approval: AppPairApproval) {
+        cancelPairConfirmation()
+        val selectedThumb = thumb ?: return
+        if (menu == null || calibrating) return
+        // Explicit selection stops any previous run. The displayed approval is
+        // not installed until a fresh inspection after removing the menu.
+        onMenuVisibilityChanged(true)
+        if (thumb !== selectedThumb) return
+        val stopped = onRunRequest(false)
+        if (stopped != SafetyIssue.NONE) {
+            openPairSelection(stopped)
+            return
+        }
+        // Reposition only the control (not input). The safety check below still
+        // requires the exact displayed package, window IDs and bounds.
+        positionThumb(if (side == TouchSide.LEFT) approval.leftBounds else approval.rightBounds)
+        closeMenu(notifyVisibility = false)
+        val confirm = object : Runnable {
+            override fun run() {
+                if (pendingPairConfirmation !== this) return
+                pendingPairConfirmation = null
+                if (thumb !== selectedThumb || menu != null || calibrating) return
+                val issue = onConnectApps(side, approval)
+                if (thumb !== selectedThumb) return
+                if (issue == SafetyIssue.NONE) {
+                    onMenuVisibilityChanged(false)
+                } else {
+                    openPairSelection(issue)
+                }
+            }
+        }
+        pendingPairConfirmation = confirm
+        // Let WindowManager publish the new topology; no capture is permitted
+        // during this interval. Do not retry a rejected approval automatically.
+        displayHandler.postDelayed(confirm, 300L)
     }
 
     private fun beginCalibration() {
+        val selectedThumb = thumb ?: return
+        if (menu == null || calibrating) return
+        cancelCalibrationExit()
+        onMenuVisibilityChanged(true)
+        if (thumb !== selectedThumb) return
+        val stopped = onCalibrationStart()
+        if (thumb !== selectedThumb) return
+        if (stopped != SafetyIssue.NONE) {
+            openPairSelection(stopped)
+            return
+        }
+        // Read the actual approved pair while its menu is still attached.
         val assessment = pairProvider()
         val pair = assessment.pair
         if (!assessment.allowed || pair == null) {
@@ -372,10 +508,12 @@ internal class ThumbOverlayController(
         fun showFeedback(message: String) { feedback?.text = message }
         fun offsetText(offset: CalibrationOffset): String = String.format(Locale.KOREA,
             "보정값: 가로 %+.1f%% · 세로 %+.1f%%", offset.dx * 100f, offset.dy * 100f)
-        onCalibrationStart()
-        closeMenu()
+        // Never notify an input-resume transition between two modal overlays.
         calibrating = true
-        thumb?.view?.visibility = View.INVISIBLE
+        closeMenu(notifyVisibility = false)
+        // Keep the real control's accessibility root available. The existing
+        // "보정" state is shown and menu/drag input is disabled during editing.
+        updateThumbState()
 
         val source = pair.source(side).bounds
         val target = pair.target(side).bounds
@@ -406,7 +544,7 @@ internal class ThumbOverlayController(
         }
 
         val a = appearanceSettings.get()
-        red = createMarker(startRed, "터치", a.directColor,
+        red = createMarker(startRed, "직접", a.directColor,
             AppearanceRules.readableTextColor(a.directColor), Color.WHITE)
         white = createMarker(startWhite, "자동", a.automaticColor,
             AppearanceRules.readableTextColor(a.automaticColor), Color.DKGRAY)
@@ -463,6 +601,9 @@ internal class ThumbOverlayController(
         }
 
         val column = panel()
+        UiKit.add(column, UiKit.text(context, palette, "영점 조절", 18f, true).apply {
+            setPadding(dp(4), dp(4), dp(4), dp(8))
+        })
         val layoutLabel = if (pair.orientation == SplitOrientation.HORIZONTAL) {
             "가로 (좌·우)"
         } else {
@@ -470,7 +611,7 @@ internal class ThumbOverlayController(
         }
         column.addView(TextView(context).apply {
             text = "앱 분할 배치: $layoutLabel\n" +
-                "앱의 실제 분할 방향은 Android에서 변경한 뒤 다시 연결하세요."
+                "Android에서 분할 방향을 바꾸면 다시 연결하세요."
             textSize = 13f
             setTextColor(palette.text)
             setPadding(dp(4), dp(4), dp(4), dp(4))
@@ -488,7 +629,7 @@ internal class ThumbOverlayController(
         feedback = calibrationStatus
         column.addView(calibrationStatus)
         val guideNotice = TextView(context).apply {
-            text = "기준선은 표시용이며 Android 분할 경계를 이동하지 않습니다."
+            text = "기준선은 표시용입니다. 실제 분할 경계는 이동하지 않습니다."
             textSize = 12f
             setTextColor(palette.secondary)
             setPadding(dp(4), dp(8), dp(4), dp(8))
@@ -509,6 +650,9 @@ internal class ThumbOverlayController(
             max = CalibrationGuide.MAX_PERCENT - CalibrationGuide.MIN_PERCENT
             progress = guidePercent - CalibrationGuide.MIN_PERCENT
             minHeight = dp(52)
+            progressTintList = android.content.res.ColorStateList.valueOf(palette.text)
+            thumbTintList = android.content.res.ColorStateList.valueOf(palette.text)
+            progressBackgroundTintList = android.content.res.ColorStateList.valueOf(palette.line)
             contentDescription = "중앙 기준선 위치 조절"
         }
         axisButton.setOnClickListener {
@@ -544,6 +688,11 @@ internal class ThumbOverlayController(
             }
         })
         column.addView(positionSlider)
+        val range = LinearLayout(context).apply { orientation = LinearLayout.HORIZONTAL }
+        range.addView(UiKit.text(context, palette, "20%", 12f, secondary = true),
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        range.addView(UiKit.text(context, palette, "80%", 12f, secondary = true))
+        UiKit.add(column, range, bottomDp = 4)
         addButton(column, "중앙 기준선 50%") {
             if (changeGuide(pair, guideAxis, CalibrationGuide.DEFAULT_PERCENT)) {
                 positionSlider.progress = guidePercent - CalibrationGuide.MIN_PERCENT
@@ -551,7 +700,7 @@ internal class ThumbOverlayController(
                 guideNotice.text = "중앙 기준선 50%로 이동했습니다."
             }
         }
-        addButton(column, "영점 저장") {
+        addButton(column, "영점 저장", primary = true) {
             val current = pairProvider().pair
             val redPoint = red?.let(::center)
             val whitePoint = white?.let(::center)
@@ -580,7 +729,10 @@ internal class ThumbOverlayController(
                 Toast.makeText(context, "현재 연결과 방향의 영점을 저장했습니다.", Toast.LENGTH_SHORT).show()
             }
         }
-        addButton(column, "영점 초기화") {
+        val compactActions = safeWindowBounds().width() >= dp(300) &&
+            context.resources.configuration.fontScale <= 1.3f
+        val secondaryActions = if (compactActions) UiKit.panePair(context, 8, 0.5f) else null
+        addButton(secondaryActions?.primary ?: column, "영점 초기화") {
             val reset = onCalibrationReset(pair, side)
             if (reset) {
                 guidePrefs.edit()
@@ -592,13 +744,16 @@ internal class ThumbOverlayController(
             endCalibration()
             Toast.makeText(context, if (reset) "현재 방향의 영점을 초기화했습니다." else "창이 변경되어 초기화할 수 없습니다. 다시 연결해 주세요.", Toast.LENGTH_LONG).show()
         }
-        addButton(column, "취소") { endCalibration() }
+        addButton(secondaryActions?.secondary ?: column, "취소") { endCalibration() }
+        secondaryActions?.let { UiKit.add(column, it.row) }
 
         val bounds = safeWindowBounds()
-        onMenuVisibilityChanged(true)
-        if (!showMenu(column, 276, bounds.left + dp(10), bounds.top + dp(12))) {
+        val panelWidth = dp(276)
+        val preferredX = if (pair.orientation == SplitOrientation.HORIZONTAL && bounds.width() >= dp(720)) {
+            (pair.left.bounds.right + pair.right.bounds.left) / 2 - panelWidth / 2
+        } else bounds.left + dp(10)
+        if (!showMenu(column, 276, preferredX, bounds.top + dp(12))) {
             endCalibration()
-            onMenuVisibilityChanged(false)
         }
     }
 
@@ -657,6 +812,11 @@ internal class ThumbOverlayController(
         val guide = View(context).apply {
             setBackgroundColor(Color.rgb(105, 105, 105))
             alpha = 0.75f
+            // Real accessible guide identity, not an ownership exemption.
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+            contentDescription = "영점 기준선 · 표시용"
+            isClickable = false
+            isFocusable = false
         }
         val layout = params(line.width, line.height, line.left, line.top).apply {
             flags = flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
@@ -697,11 +857,33 @@ internal class ThumbOverlayController(
         }
     }
 
+    private fun cancelCalibrationExit() {
+        pendingCalibrationExit?.let { displayHandler.removeCallbacks(it) }
+        pendingCalibrationExit = null
+    }
+
     private fun endCalibration() {
-        clearCalibration()
+        cancelCalibrationExit()
         calibrating = false
-        closeMenu()
-        thumb?.view?.visibility = View.VISIBLE
+        clearCalibration()
+        closeMenu(notifyVisibility = false)
+        val selectedThumb = thumb ?: return
+        selectedThumb.view.visibility = View.VISIBLE
+        updateThumbState()
+        // Calibration has stopped the run. Keep modal pause until its windows
+        // settle, then use the normal fresh safety inspection. All independent
+        // window-change and emergency-stop checks remain active throughout.
+        val finish = object : Runnable {
+            override fun run() {
+                if (pendingCalibrationExit !== this) return
+                pendingCalibrationExit = null
+                if (thumb !== selectedThumb || calibrating || menu != null ||
+                    pendingPairConfirmation != null || pendingRunRequest != null) return
+                onMenuVisibilityChanged(false)
+            }
+        }
+        pendingCalibrationExit = finish
+        displayHandler.postDelayed(finish, 300L)
     }
 
     private fun clearCalibration() {
@@ -734,13 +916,13 @@ internal class ThumbOverlayController(
             position[1] + marker.view.height / 2f)
     }
 
-    private fun closeMenu() {
+    private fun closeMenu(notifyVisibility: Boolean = true) {
         val target = menu ?: return
         menuStateLabel = null
         menuRunButton = null
         menu = null
         safeRemove(target)
-        onMenuVisibilityChanged(false)
+        if (notifyVisibility) onMenuVisibilityChanged(false)
     }
 
     private fun safeRemove(view: View) {
@@ -815,15 +997,15 @@ internal class ThumbOverlayController(
 
     private fun panel() = LinearLayout(context).apply {
         orientation = LinearLayout.VERTICAL
-        setPadding(dp(6), dp(6), dp(6), dp(6))
+        setPadding(dp(10), dp(10), dp(10), dp(10))
         background = GradientDrawable().apply {
             setColor(palette.background)
             setStroke(dp(1), palette.line)
         }
     }
 
-    private fun addButton(parent: LinearLayout, label: String, action: () -> Unit) {
-        UiKit.add(parent, UiKit.action(context, palette, label, primary = false).apply {
+    private fun addButton(parent: LinearLayout, label: String, primary: Boolean = false, action: () -> Unit) {
+        UiKit.add(parent, UiKit.action(context, palette, label, primary = primary).apply {
             setOnClickListener { action() }
         }, topDp = 4)
     }
