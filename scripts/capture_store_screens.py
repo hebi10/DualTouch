@@ -119,6 +119,18 @@ def tap(text):
     raise AssertionError("Missing visible control: " + text)
 
 
+def scroll_to_visible_text(text):
+    for _ in range(9):
+        tree = nodes()
+        if any(node.get("text") == text for node in tree.iter("node")):
+            return
+        width, height = map(int, re.findall(r"(\d+)x(\d+)", shell("wm", "size"))[-1])
+        shell("input", "swipe", str(width // 2), str(height * 3 // 4),
+              str(width // 2), str(height // 3), "450")
+        time.sleep(0.7)
+    raise AssertionError("Missing visible section: " + text)
+
+
 def launch():
     shell("am", "force-stop", PACKAGE)
     started = shell("am", "start", "-W", "-n", PACKAGE + "/.MainActivity")
@@ -165,6 +177,8 @@ try:
     shell("cmd", "uimode", "night", "no")
     launch()
     capture("phone-01-intro-light")
+    scroll_to_visible_text("사용 순서")
+    capture("phone-01b-intro-steps-light")
     tap("내용을 이해하고 계속")
     home = nodes()
     home_text = [node.get("text", "") for node in home.iter("node")]
@@ -184,13 +198,19 @@ try:
     capture("phone-03c-settings-bottom-light")
     launch()
     tap("플로팅 표시")
+    disclosure = " ".join(node.get("text", "") for node in nodes().iter("node"))
+    assert "사용 목적" in disclosure and "일시적으로 확인하는 정보" in disclosure, "Grouped consent disclosure missing"
     capture("phone-04-disclosure-light")
     verify_accessibility_settings()
     tap("분할 화면 안내")
     capture("phone-05-guide-light")
+    scroll_to_visible_text("분할 배치 예시")
+    capture("phone-05c-guide-layouts-light")
     launch()
     tap("오류·중지 안내")
     capture("phone-05b-help-light")
+    scroll_to_visible_text("이전 터치 처리 종료를 확인할 수 없을 때")
+    capture("phone-05d-help-recovery-light")
     # 1080x2160 at 420dpi approximates the 412x824dp design viewport.
     shell("wm", "size", "1080x2160")
     launch()
