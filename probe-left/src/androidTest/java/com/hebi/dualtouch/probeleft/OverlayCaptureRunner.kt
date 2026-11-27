@@ -135,6 +135,12 @@ class OverlayCaptureRunner : Instrumentation() {
 
     private data class VisibleNode(val pkg: String, val text: String, val description: String, val bounds: Rect)
 
+    private fun VisibleNode.isReadyThumb() = pkg == APP && text == "대기" &&
+        description.startsWith("DualTouch Thumb. 연결됨 · 실행 대기")
+
+    private fun VisibleNode.isBlockedThumb() = pkg == APP && description.startsWith("DualTouch Thumb.") &&
+        (text == "오류" || (text == "대기" && description.startsWith("DualTouch Thumb. 입력 일시 중지")))
+
     private fun visibleNodes(): List<VisibleNode> {
         val result = mutableListOf<VisibleNode>()
         fun visit(node: AccessibilityNodeInfo, depth: Int) {
@@ -570,7 +576,7 @@ class OverlayCaptureRunner : Instrumentation() {
         val thumb = nodes.firstOrNull { it.description.startsWith("DualTouch Thumb.") }
         fun text(value: String) = nodes.any { it.text == value }
         val valid = when (name) {
-            "DES-06-thumb-ready" -> thumb != null && thumb.text == "대기" && thumb.description.contains("연결됨 · 실행 대기")
+            "DES-06-thumb-ready" -> thumb?.isReadyThumb() == true
             "DES-07-thumb-menu" -> text("실행") && text("좌/우 선택 · 앱 연결") && text("영점 조절") && nodes.any { it.text.startsWith("연결됨 · 실행 대기") }
             "DES-08-pair-selection" -> text("현재 분할 앱 연결") && nodes.any { it.text.contains(LEFT) } && nodes.any { it.text.contains(RIGHT) } && nodes.any { it.text.endsWith("자동 연결") }
             "DES-09-thumb-running" -> thumb != null && Regex("(?:[1-9]|1[0-9]|20)초").matches(thumb.text) && thumb.description.contains("실행 중")
@@ -578,7 +584,7 @@ class OverlayCaptureRunner : Instrumentation() {
                 nodes.any { it.text == "직접" && it.description.startsWith("직접 터치 보정점") } &&
                 nodes.any { it.text == "자동" && it.description.startsWith("자동 터치 보정점") } &&
                 nodes.any { it.text.startsWith("중앙 기준선 위치:") } &&
-                nodes.none { it.text == "오류" && it.description.startsWith("DualTouch Thumb.") }
+                nodes.none { it.isBlockedThumb() }
             else -> false
         }
         check(valid) { "Actual UI no longer matches $name" }
@@ -658,7 +664,7 @@ class OverlayCaptureRunner : Instrumentation() {
                 it.pkg == APP && (
                     it.text in directions ||
                     it.text.contains("화면 구조 검사 시간이 초과되었습니다.") ||
-                    it.text.contains("앱의 화면 구조를 읽을 수 없어") ||
+                    it.text.contains("앱 화면 일부를 확인할 수 없습니다.") ||
                     it.text.contains("다른 접근성 오버레이가 있어")
                 )
             }
@@ -717,13 +723,10 @@ class OverlayCaptureRunner : Instrumentation() {
 
         stage = "ready thumb and menu"
         val result = awaitNode("actual approval result", 15000) {
-            it.pkg == APP && (
-                (it.description.startsWith("DualTouch Thumb.") &&
-                    (it.text == "오류" || (it.text == "대기" && it.description.contains("연결됨 · 실행 대기"))))
-                || it.text == "현재 분할 앱 연결"
-            )
+            it.isReadyThumb() || it.isBlockedThumb() ||
+                (it.pkg == APP && it.text == "현재 분할 앱 연결")
         }
-        if (result.text != "대기") {
+        if (!result.isReadyThumb()) {
             recordOverlayInventory("after_explicit_approval_blocked")
             observations.put(JSONObject().put("approval_outcome", "blocked")
                 .put("controller_thumb_state", visibleNodes().firstOrNull {
@@ -736,12 +739,9 @@ class OverlayCaptureRunner : Instrumentation() {
         if (captureDesigns) screenshot("DES-06-thumb-ready", "approved pair; input not running")
         tap(thumb("대기"))
         val menu = awaitNode("ready menu or safety block") {
-            it.pkg == APP && (
-                it.text.startsWith("연결됨 · 실행 대기") ||
-                (it.text == "오류" && it.description.startsWith("DualTouch Thumb."))
-            )
+            (it.pkg == APP && it.text.startsWith("연결됨 · 실행 대기")) || it.isBlockedThumb()
         }
-        check(menu.text != "오류") { "Ready menu blocked: ${menu.description}" }
+        check(!menu.isBlockedThumb()) { "Ready menu blocked: ${menu.description}" }
         awaitNode("execute button") { it.pkg == APP && it.text == "실행" }
         awaitNode("calibration button") { it.pkg == APP && it.text == "영점 조절" }
         requireSplit()
@@ -784,12 +784,10 @@ class OverlayCaptureRunner : Instrumentation() {
         recordOverlayInventory("before_calibration")
         tapText(APP, "영점 조절")
         val calibrationResult = awaitNode("calibration entry outcome", 15000) {
-            it.pkg == APP && (
-                it.text == "직접" && it.description.startsWith("직접 터치 보정점") ||
-                it.text == "오류" && it.description.startsWith("DualTouch Thumb.")
-            )
+            (it.pkg == APP && it.text == "직접" && it.description.startsWith("직접 터치 보정점")) ||
+                it.isBlockedThumb()
         }
-        if (calibrationResult.text == "오류") {
+        if (calibrationResult.isBlockedThumb()) {
             recordOverlayInventory("calibration_entry_blocked")
             error("Calibration blocked: " + calibrationResult.description)
         }
@@ -833,11 +831,10 @@ class OverlayCaptureRunner : Instrumentation() {
         // pair approval, or fail-closed condition is changed.
         SystemClock.sleep(1000)
         val exitState = awaitNode("actual calibration cancellation result", 15000) {
-            it.pkg == APP && it.description.startsWith("DualTouch Thumb.") &&
-                it.text in setOf("대기", "오류")
+            it.isReadyThumb() || it.isBlockedThumb()
         }
         observations.put(JSONObject().put("calibration_cancel_thumb_state", exitState.description))
-        check(exitState.text == "대기" && exitState.description.contains("연결됨 · 실행 대기")) {
+        check(exitState.isReadyThumb()) {
             "Calibration cancellation did not restore approved idle state: " + exitState.description
         }
         requireSplit()
@@ -857,11 +854,10 @@ class OverlayCaptureRunner : Instrumentation() {
         requireSplit()
         tapText(APP, "실행")
         val running = awaitNode("actual active countdown or safety block", 7000) {
-            it.pkg == APP && it.description.startsWith("DualTouch Thumb.") &&
-                (it.text == "오류" || (Regex("(?:[1-9]|1[0-9]|20)초").matches(it.text) &&
-                    it.description.contains("실행 중")))
+            it.isBlockedThumb() || (it.pkg == APP && it.description.startsWith("DualTouch Thumb.") &&
+                Regex("(?:[1-9]|1[0-9]|20)초").matches(it.text) && it.description.contains("실행 중"))
         }
-        check(running.text != "오류") { "Countdown blocked: " + running.description }
+        check(!running.isBlockedThumb()) { "Countdown blocked: " + running.description }
         requireSplit()
         screenshot("DES-09-thumb-running", "active real countdown; no mirrored taps issued")
     }

@@ -32,6 +32,37 @@ class ThumbUiStateTest {
         assertEquals("오류", state(running = false, issue = SafetyIssue.PAIR_CHANGED).label)
     }
 
+    @Test fun transientIssuesOnTheApprovedPairAskForExplicitExecution() {
+        val keyboard = state(running = false, issue = SafetyIssue.KEYBOARD)
+        val incomplete = state(running = false, issue = SafetyIssue.INPUT_INSPECTION_INCOMPLETE)
+        val limit = state(running = false, issue = SafetyIssue.INPUT_INSPECTION_LIMIT)
+        val timeout = state(running = false, issue = SafetyIssue.INPUT_INSPECTION_TIMEOUT)
+        for (retry in listOf(keyboard, incomplete, limit, timeout)) {
+            assertEquals("대기", retry.label)
+            assertTrue(retry.canRetry)
+            assertTrue(retry.description.contains("Thumb에서 실행"))
+            assertFalse(retry.description.contains("다시 연결"))
+            assertTrue(homeNextStep(true, true, true, InteractionPhase.PAUSED, retry)
+                .contains("Thumb에서 실행"))
+        }
+        assertTrue(keyboard.description.contains("키보드를 닫고"))
+        assertTrue(incomplete.description.contains("앱 화면 일부"))
+        assertTrue(limit.description.contains("간단한 화면"))
+        assertTrue(timeout.description.contains("시간이 초과"))
+    }
+
+    @Test fun unapprovedPairAndHardFailuresRemainErrors() {
+        val hardFailures = listOf(
+            state(connected = false, running = false, issue = SafetyIssue.KEYBOARD),
+            state(running = false, issue = SafetyIssue.PAIR_CHANGED),
+            state(running = false, issue = SafetyIssue.SENSITIVE_INPUT),
+        )
+        for (error in hardFailures) {
+            assertEquals("오류", error.label)
+            assertFalse(error.canRetry)
+        }
+    }
+
     @Test fun explicitZeroCalibrationIsStillSavedOnlyForCurrentPairAndDirection() {
         val pair = WindowPair(
             WindowSnapshot("a", ScreenRect(0, 0, 100, 100), windowId = 1),

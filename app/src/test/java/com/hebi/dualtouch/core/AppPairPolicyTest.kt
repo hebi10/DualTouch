@@ -113,6 +113,71 @@ class AppPairPolicyTest {
         assertFalse(result.allowed)
     }
 
+    @Test fun keyboardAllowsRetryOnlyForTheSameApprovedPair() {
+        val (first, second) = pair()
+        val approval = AppPairApproval.fromPair(select(pair()).pair!!)
+        val keyboard = ObservedWindow(WindowLayer.INPUT_METHOD, null, ScreenRect(0, 700, 1020, 1100))
+        val suspended = verify(listOf(first, second, keyboard), approval)
+        assertEquals(SafetyIssue.KEYBOARD, suspended.issue)
+        assertTrue(suspended.issue.canRetrySamePair())
+        assertFalse(suspended.allowed)
+        assertTrue(verify(listOf(second, first), approval).allowed)
+
+        val changedWindows = listOf(
+            second.copy(packageName = "com.example.replacement"),
+            second.copy(windowId = 42),
+            second.copy(displayId = 2),
+            second.copy(bounds = right.copy(bottom = 1000)),
+        )
+        for (changed in changedWindows) {
+            val result = verify(listOf(first, changed, keyboard), approval)
+            assertEquals(SafetyIssue.PAIR_CHANGED, result.issue)
+            assertFalse(result.issue.canRetrySamePair())
+            assertFalse(result.allowed)
+        }
+    }
+
+    @Test fun anUnreadablePackagePermitsRetryOnlyUntilTheKnownLayoutChanges() {
+        val (first, second) = pair()
+        val approval = AppPairApproval.fromPair(select(pair()).pair!!)
+        for ((inspection, issue) in listOf(
+            InputInspection.UNAVAILABLE to SafetyIssue.INPUT_INSPECTION_INCOMPLETE,
+            InputInspection.TIME_BUDGET_EXCEEDED to SafetyIssue.INPUT_INSPECTION_TIMEOUT,
+        )) {
+            val unreadable = second.copy(packageName = null, inputInspection = inspection)
+            val suspended = verify(listOf(first, unreadable), approval)
+            assertEquals(issue, suspended.issue)
+            assertTrue(suspended.issue.canRetrySamePair())
+            assertFalse(suspended.allowed)
+
+            val changed = verify(listOf(first, unreadable.copy(windowId = 42)), approval)
+            assertEquals(SafetyIssue.PAIR_CHANGED, changed.issue)
+            assertFalse(changed.issue.canRetrySamePair())
+            assertFalse(verify(listOf(first), approval).allowed)
+        }
+    }
+
+    @Test fun calibrationLayoutStillRequiresKnownApprovedWindowsAndBlocksKeyboard() {
+        val (first, second) = pair()
+        val approval = AppPairApproval.fromPair(select(pair()).pair!!)
+        val unreadableTree = second.copy(inputInspection = InputInspection.UNAVAILABLE)
+        val windows = listOf(first, unreadableTree)
+        val keyboard = ObservedWindow(WindowLayer.INPUT_METHOD, null, ScreenRect(0, 700, 1020, 1100))
+
+        assertTrue(AppPairPolicy.verifyLayoutForCalibration(windows, owner, workArea, approval).allowed)
+        assertFalse(verify(windows, approval).allowed)
+        val limit = verify(listOf(first, second.copy(inputInspection = InputInspection.LIMIT_REACHED)), approval)
+        assertEquals(SafetyIssue.INPUT_INSPECTION_LIMIT, limit.issue)
+        assertTrue(limit.issue.canRetrySamePair())
+        assertFalse(limit.allowed)
+        assertEquals(SafetyIssue.KEYBOARD,
+            AppPairPolicy.verifyLayoutForCalibration(windows + keyboard, owner, workArea, approval).issue)
+        assertFalse(AppPairPolicy.verifyLayoutForCalibration(
+            listOf(first, unreadableTree.copy(packageName = null)), owner, workArea, approval).allowed)
+        assertEquals(SafetyIssue.PAIR_CHANGED, AppPairPolicy.verifyLayoutForCalibration(
+            listOf(first, unreadableTree.copy(windowId = 42)), owner, workArea, approval).issue)
+    }
+
     @Test fun rejectsUnexpectedThirdWindowOrDifferentDisplays() {
         assertEquals(SafetyIssue.EXTRA_APPLICATION_WINDOWS,
             select(pair() + window("com.example.chat", 30,
