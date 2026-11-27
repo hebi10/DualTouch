@@ -703,6 +703,37 @@ class OverlayCaptureRunner : Instrumentation() {
         if (captureDesigns) screenshot("DES-07-thumb-menu", "approved pair; three actions")
     }
 
+    private fun verticalMarkersUncovered(): Boolean {
+        if (scenario != "vertical-idle") return false
+        val nodes = visibleNodes().filter { it.pkg == APP }
+        val direct = nodes.singleOrNull { it.text == "직접" && it.description.startsWith("직접 터치 보정점") }
+            ?: return false
+        val automatic = nodes.singleOrNull { it.text == "자동" && it.description.startsWith("자동 터치 보정점") }
+            ?: return false
+        if (nodes.none { it.text == "영점 설정 펼치기" } ||
+            nodes.none { it.text == "보정" && it.description.startsWith("DualTouch Thumb.") } ||
+            nodes.any { it.text == "영점 저장" || it.text == "실행" || it.text.startsWith("중앙 기준선 위치:") }) return false
+        val panels = mutableListOf<Rect>()
+        for (window in automation.windows) {
+            if (window.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY) continue
+            val root = window.root ?: continue
+            try {
+                if (root.packageName?.toString() != APP) continue
+                val matches = root.findAccessibilityNodeInfosByText("영점 설정 펼치기")
+                val found = try { matches.any { it.text?.toString() == "영점 설정 펼치기" && it.isVisibleToUser } }
+                finally { matches.forEach { it.recycle() } }
+                if (found) {
+                    val bounds = Rect()
+                    window.getBoundsInScreen(bounds)
+                    panels.add(bounds)
+                }
+            } finally { root.recycle() }
+        }
+        val panel = panels.singleOrNull() ?: return false
+        return !panel.isEmpty && !Rect.intersects(panel, direct.bounds) &&
+            !Rect.intersects(panel, automatic.bounds)
+    }
+
     private fun captureCalibration() {
         stage = "calibration"
         recordOverlayInventory("before_calibration")
@@ -731,7 +762,24 @@ class OverlayCaptureRunner : Instrumentation() {
                 it.pkg == APP && it.text == "가로/세로 기준선 변경 · 가로 기준선"
             }
         }
-        screenshot("DES-10-calibration", "real calibration overlay; both reference markers")
+        screenshot("DES-10-calibration", "real calibration overlay; reference markers present in the accessibility state")
+        if (scenario == "vertical-idle") {
+            stage = "vertical calibration / fold panel"
+            tapText(APP, "기준점 조절 · 패널 접기")
+            waitFor("folded panel does not cover either actual marker", 12000) { verticalMarkersUncovered() }
+            requireVerticalSplit()
+            screenshot("QA-vertical-markers-uncovered", "actual calibration panel folded; both marker bounds unobstructed", false)
+            check(verticalMarkersUncovered()) { "Marker visibility changed during capture" }
+            observations.put(JSONObject().put("vertical_marker_panel_uncovered", true))
+            tapText(APP, "영점 설정 펼치기")
+            awaitNode("expanded horizontal guide") {
+                it.pkg == APP && it.text == "가로/세로 기준선 변경 · 가로 기준선"
+            }
+            awaitNode("unchanged default guide value") {
+                it.pkg == APP && it.text == "중앙 기준선 위치: 50%"
+            }
+            observations.put(JSONObject().put("vertical_calibration_panel_reexpanded", true))
+        }
         stage = "calibration / cancel"
         if (scenario == "vertical-idle") tapWithScroll(APP, "취소")
         else tapText(APP, "취소")

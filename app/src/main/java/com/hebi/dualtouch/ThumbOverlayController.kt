@@ -600,10 +600,33 @@ internal class ThumbOverlayController(
             }, onTap = {})
         }
 
-        val column = panel()
+        val frame = panel()
+        val canFoldPanel = pair.orientation == SplitOrientation.VERTICAL
+        val column = if (canFoldPanel) UiKit.column(context) else frame
+        val folded = if (canFoldPanel) UiKit.column(context).apply { visibility = View.GONE } else null
+        fun setFolded(value: Boolean) {
+            val controls = folded ?: return
+            val scroll = menu as? ScrollView ?: return
+            if (!calibrating) return
+            // Preserve the same modal window, pair, guide, and both actual
+            // markers. Folding changes only presentation, never input state.
+            column.visibility = if (value) View.GONE else View.VISIBLE
+            controls.visibility = if (value) View.VISIBLE else View.GONE
+            scroll.requestLayout()
+            scroll.post { if (calibrating && menu === scroll) scroll.scrollTo(0, 0) }
+        }
+        folded?.let { controls ->
+            UiKit.add(frame, column)
+            UiKit.add(frame, controls)
+            addButton(controls, "영점 설정 펼치기") { setFolded(false) }
+            addButton(controls, "취소") { endCalibration() }
+        }
         UiKit.add(column, UiKit.text(context, palette, "영점 조절", 18f, true).apply {
             setPadding(dp(4), dp(4), dp(4), dp(8))
         })
+        if (canFoldPanel) {
+            addButton(column, "기준점 조절 · 패널 접기") { setFolded(true) }
+        }
         val layoutLabel = if (pair.orientation == SplitOrientation.HORIZONTAL) {
             "가로 (좌·우)"
         } else {
@@ -752,7 +775,7 @@ internal class ThumbOverlayController(
         val preferredX = if (pair.orientation == SplitOrientation.HORIZONTAL && bounds.width() >= dp(720)) {
             (pair.left.bounds.right + pair.right.bounds.left) / 2 - panelWidth / 2
         } else bounds.left + dp(10)
-        if (!showMenu(column, 276, preferredX, bounds.top + dp(12))) {
+        if (!showMenu(frame, 276, preferredX, bounds.top + dp(12))) {
             endCalibration()
         }
     }

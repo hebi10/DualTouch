@@ -31,6 +31,8 @@ ALLOWED = EXPECTED | {"QA-stopped.png", "diagnostic-failure.png",
                       "diagnostic-stop-failure.png", "diagnostic-launcher-anr.png"}
 if SCENARIO in IDLE_SCENARIOS:
     ALLOWED |= HOME_EVIDENCE
+if SCENARIO == "vertical-idle":
+    ALLOWED |= {"QA-vertical-markers-uncovered.png"}
 
 
 def adb(*args, timeout=45):
@@ -199,6 +201,9 @@ def collect():
                    item.get("split_orientation") == "vertical" for item in observations), "No actual upper/lower split evidence"
         assert any(item.get("vertical_directions_verified") is True for item in observations), "Upper/lower approval choices unverified"
         assert any(item.get("vertical_calibration_verified") is True for item in observations), "Vertical calibration/cancel unverified"
+        assert "QA-vertical-markers-uncovered.png" in captured, "Folded panel evidence missing"
+        assert any(item.get("vertical_marker_panel_uncovered") is True for item in observations), "Actual reference markers remain covered"
+        assert any(item.get("vertical_calibration_panel_reexpanded") is True for item in observations), "Calibration controls not restored"
     report["host_capture_verified"] = True
     (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return report
