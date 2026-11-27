@@ -150,6 +150,26 @@ class WindowSafetyPolicyTest {
         )
     }
 
+    @Test fun largerTreesStillRequireACompleteScanWithinBothBudgets() {
+        fun inspect(lastChild: Int, sensitive: Int? = null, deadlineAt: Int? = null): InputInspection {
+            var lastRead = 0
+            return inspectInputTree(
+                root = 0,
+                limit = MAX_INPUT_NODES_PER_WINDOW,
+                isSensitive = { it == sensitive },
+                shouldContinue = { lastRead != deadlineAt },
+            ) { node ->
+                if (node == 0) (1..lastChild).asSequence().onEach { lastRead = it }.iterator()
+                else emptyList<Int>().iterator()
+            }
+        }
+
+        assertEquals(InputInspection.CLEAR, inspect(lastChild = 300))
+        assertEquals(InputInspection.SENSITIVE, inspect(lastChild = 300, sensitive = 299))
+        assertEquals(InputInspection.LIMIT_REACHED, inspect(lastChild = MAX_INPUT_NODES_PER_WINDOW))
+        assertEquals(InputInspection.TIME_BUDGET_EXCEEDED, inspect(lastChild = 300, deadlineAt = 275))
+    }
+
     @Test fun absentNonIdentityMetadataNeverRemovesObstructionOrUnknownOverlayProtection() {
         val thinBar = ObservedWindow(WindowLayer.SYSTEM, null, ScreenRect(0, 0, 1000, 24))
         assertEquals(assessment().issue, assessment(thinBar).issue)

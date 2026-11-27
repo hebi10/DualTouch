@@ -199,8 +199,8 @@ object WindowSafetyPolicy {
         SafetyIssue.PAIR_CHANGED -> "연결한 앱 창이 변경되어 다시 선택해야 합니다."
         SafetyIssue.PROTECTED_APP -> "시스템·보안·금융 앱은 연결할 수 없습니다."
         SafetyIssue.SENSITIVE_INPUT -> "선택한 창에서 비밀번호나 활성 입력 칸이 감지되어 중지합니다."
-        SafetyIssue.INPUT_INSPECTION_INCOMPLETE -> "앱의 화면 구조를 읽을 수 없어 입력 안전을 확인할 수 없습니다."
-        SafetyIssue.INPUT_INSPECTION_LIMIT -> "앱 화면이 복잡해 검사 한도 안에서 입력 안전을 확인할 수 없습니다."
+        SafetyIssue.INPUT_INSPECTION_INCOMPLETE -> "앱 화면 일부를 확인할 수 없습니다. 화면이 열린 뒤 다시 검색해 주세요."
+        SafetyIssue.INPUT_INSPECTION_LIMIT -> "이 화면에는 확인할 항목이 너무 많습니다. 간단한 화면에서 다시 검색해 주세요."
         SafetyIssue.TAP_OBSTRUCTED -> "터치 위치가 다른 창에 가려졌거나 앱의 입력 영역을 벗어났습니다."
         SafetyIssue.INPUT_FINISHING -> "Android가 이전 터치를 처리 중입니다. 잠시 뒤 다시 실행해 주세요."
         SafetyIssue.INPUT_RECOVERY_REQUIRED -> "이전 터치의 종료를 확인하지 못했습니다. 시스템 접근성 서비스를 껐다 켜고 다시 연결해 주세요."
@@ -210,6 +210,8 @@ object WindowSafetyPolicy {
 }
 
 enum class InputInspection { CLEAR, SENSITIVE, UNAVAILABLE, LIMIT_REACHED, TIME_BUDGET_EXCEEDED }
+
+internal const val MAX_INPUT_NODES_PER_WINDOW = 512
 
 internal fun <Node : Any> inspectInputTree(
     root: Node?,

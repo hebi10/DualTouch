@@ -28,6 +28,7 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
 import com.hebi.dualtouch.core.AppPairApproval
 import com.hebi.dualtouch.core.AppPairPolicy
+import com.hebi.dualtouch.core.MAX_INPUT_NODES_PER_WINDOW
 import com.hebi.dualtouch.core.CalibrationOffset
 import com.hebi.dualtouch.core.InputInspection
 import com.hebi.dualtouch.core.DispatchGeneration
@@ -70,7 +71,6 @@ class TouchMirrorService : AccessibilityService() {
         private const val READY_WAIT_MS = 60_000L
         private const val TAP_MAX_MS = 500L
         private const val STROKE_MS = 75L
-        private const val INPUT_NODE_LIMIT = 256
         private const val INSPECTION_BUDGET_MS = 500L
         private const val CONTENT_REFRESH_MS = 32L
         private const val GESTURE_CALLBACK_TIMEOUT_MS = 2_000L
@@ -977,6 +977,16 @@ class TouchMirrorService : AccessibilityService() {
         }
     }
 
+    private inline fun readAppNode(
+        deadline: Long,
+        read: (Int) -> AccessibilityNodeInfo?,
+    ): AccessibilityNodeInfo? {
+        if (SystemClock.uptimeMillis() >= deadline) return null
+        val node = read(AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID)
+        if (node != null || SystemClock.uptimeMillis() >= deadline) return node
+        return read(0)
+    }
+
     private fun observeWindows(deadline: Long, timing: InspectionTiming?): List<ReadWindow> {
         return timing.measure(InspectionPhase.WINDOWS) { windows }.map { window ->
             val bounds = Rect()
@@ -996,27 +1006,22 @@ class TouchMirrorService : AccessibilityService() {
             val budgetAvailable = SystemClock.uptimeMillis() < deadline
             val root = if (layer.requiresPackageIdentity() && budgetAvailable) {
                 timing.measure(if (layer == WindowLayer.APPLICATION) InspectionPhase.APP_ROOT else InspectionPhase.OVERLAY_ROOT) {
-                    window.getRoot(
-                        if (layer == WindowLayer.APPLICATION)
-                            AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID
-                        else 0
-                    )
+                    if (layer == WindowLayer.APPLICATION) readAppNode(deadline) { window.getRoot(it) }
+                    else window.getRoot(0)
                 }
             } else null
             val input = if (layer == WindowLayer.APPLICATION) {
                 if (!budgetAvailable || SystemClock.uptimeMillis() >= deadline) {
                     InputInspection.TIME_BUDGET_EXCEEDED
                 } else {
-                    // Prefetch reduces individual remote node lookups. Still inspect
-                    // every reachable node within the same limit and deadline.
                     timing.measure(InspectionPhase.TREE) {
                         inspectInputTree(
-                            root, INPUT_NODE_LIMIT,
+                            root, MAX_INPUT_NODES_PER_WINDOW,
                             isSensitive = { it.isPassword || (it.isEditable && it.isFocused) },
                             shouldContinue = { SystemClock.uptimeMillis() < deadline },
                             children = { node ->
-                                (0 until node.childCount).asSequence().map {
-                                    node.getChild(it, AccessibilityNodeInfo.FLAG_PREFETCH_DESCENDANTS_HYBRID)
+                                (0 until node.childCount).asSequence().map { index ->
+                                    readAppNode(deadline) { node.getChild(index, it) }
                                 }.iterator()
                             },
                         )

@@ -76,6 +76,9 @@ object AppPairPolicy {
         if (apps.any { it.pictureInPicture }) return SafetyAssessment(null, SafetyIssue.PICTURE_IN_PICTURE)
         if (apps.size > 2) return SafetyAssessment(null, SafetyIssue.EXTRA_APPLICATION_WINDOWS)
         if (apps.size != 2) return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
+        if (windows.any { it.layer == WindowLayer.INPUT_METHOD }) {
+            return SafetyAssessment(null, SafetyIssue.KEYBOARD)
+        }
         // A root not queried before the read deadline is a timeout, not a
         // confirmed missing identity. Neither state may authorize a pair.
         if (apps.any {
@@ -122,9 +125,6 @@ object AppPairPolicy {
 
         if (apps.none { it.focused }) {
             return SafetyAssessment(null, SafetyIssue.NO_FOCUSED_TARGET)
-        }
-        if (windows.any { it.layer == WindowLayer.INPUT_METHOD }) {
-            return SafetyAssessment(null, SafetyIssue.KEYBOARD)
         }
         if (windows.any {
             it.layer == WindowLayer.ACCESSIBILITY &&

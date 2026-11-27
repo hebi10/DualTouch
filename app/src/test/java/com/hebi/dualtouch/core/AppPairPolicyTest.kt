@@ -105,6 +105,14 @@ class AppPairPolicyTest {
                 ScreenRect(100, 100, 200, 200))).issue)
     }
 
+    @Test fun reportsOpenKeyboardWhenBrowserInspectionIsIncomplete() {
+        val (first, second) = pair()
+        val keyboard = ObservedWindow(WindowLayer.INPUT_METHOD, null, ScreenRect(0, 700, 1020, 1100))
+        val result = select(listOf(first, second.copy(inputInspection = InputInspection.UNAVAILABLE), keyboard))
+        assertEquals(SafetyIssue.KEYBOARD, result.issue)
+        assertFalse(result.allowed)
+    }
+
     @Test fun rejectsUnexpectedThirdWindowOrDifferentDisplays() {
         assertEquals(SafetyIssue.EXTRA_APPLICATION_WINDOWS,
             select(pair() + window("com.example.chat", 30,
