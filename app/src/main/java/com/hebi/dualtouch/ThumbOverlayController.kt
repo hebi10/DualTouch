@@ -286,11 +286,12 @@ internal class ThumbOverlayController(
         onMenuVisibilityChanged(true)
         if (thumb == null) return
         val column = panel()
+        val state = stateProvider()
         menuStateLabel = TextView(context).apply {
-            text = stateProvider().description
+            text = state.description
             textSize = 14f
             typeface = android.graphics.Typeface.DEFAULT_BOLD
-            setTextColor(if (stateProvider().label == "대기") palette.success else palette.text)
+            setTextColor(if (state.label == "대기" && !state.canRetry) palette.success else palette.text)
             setPadding(dp(10), dp(8), dp(10), dp(8))
         }.also { column.addView(it) }
         val requestedStart = !runningProvider()
@@ -432,7 +433,12 @@ internal class ThumbOverlayController(
                 when (issue) {
                     SafetyIssue.NONE -> onMenuVisibilityChanged(false)
                     SafetyIssue.UNAPPROVED_PAIR -> openPairSelection()
-                    else -> openPairSelection(issue)
+                    SafetyIssue.INPUT_FINISHING -> openMenu()
+                    else -> if (stateProvider().canRetry) {
+                        openMenu()
+                    } else {
+                        openPairSelection(issue)
+                    }
                 }
             }
         }

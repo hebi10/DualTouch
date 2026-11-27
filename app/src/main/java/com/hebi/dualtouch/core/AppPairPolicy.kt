@@ -3,6 +3,14 @@ package com.hebi.dualtouch.core
 import kotlin.math.max
 import kotlin.math.min
 
+internal fun SafetyIssue.canRetrySamePair(): Boolean = when (this) {
+    SafetyIssue.KEYBOARD,
+    SafetyIssue.INPUT_INSPECTION_INCOMPLETE,
+    SafetyIssue.INPUT_INSPECTION_LIMIT,
+    SafetyIssue.INPUT_INSPECTION_TIMEOUT -> true
+    else -> false
+}
+
 /**
  * Only the two windows explicitly selected by the user are allowed.
  * Approvals are session-scoped and deliberately not stored across launches.
@@ -71,16 +79,26 @@ object AppPairPolicy {
         windows: List<ObservedWindow>,
         controllerPackage: String,
         workArea: SplitWorkArea,
+    ): SafetyAssessment = select(windows, controllerPackage, workArea, requireInputTree = true)
+
+    private fun select(
+        windows: List<ObservedWindow>,
+        controllerPackage: String,
+        workArea: SplitWorkArea,
+        requireInputTree: Boolean,
     ): SafetyAssessment {
         val apps = windows.filter { it.layer == WindowLayer.APPLICATION }
         if (apps.any { it.pictureInPicture }) return SafetyAssessment(null, SafetyIssue.PICTURE_IN_PICTURE)
         if (apps.size > 2) return SafetyAssessment(null, SafetyIssue.EXTRA_APPLICATION_WINDOWS)
         if (apps.size != 2) return SafetyAssessment(null, SafetyIssue.MISSING_PAIR)
+        if (windows.any { it.layer == WindowLayer.INPUT_METHOD }) {
+            return SafetyAssessment(null, SafetyIssue.KEYBOARD)
+        }
         // A root not queried before the read deadline is a timeout, not a
         // confirmed missing identity. Neither state may authorize a pair.
         if (apps.any {
                 it.packageName.isNullOrBlank() &&
-                    it.inputInspection != InputInspection.TIME_BUDGET_EXCEEDED
+                    (!requireInputTree || it.inputInspection != InputInspection.TIME_BUDGET_EXCEEDED)
             }) {
             return SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_INCOMPLETE)
         }
@@ -91,7 +109,9 @@ object AppPairPolicy {
             }) {
             return SafetyAssessment(null, SafetyIssue.PROTECTED_APP)
         }
-        WindowSafetyPolicy.inputIssue(apps)?.let { return SafetyAssessment(null, it) }
+        if (requireInputTree) {
+            WindowSafetyPolicy.inputIssue(apps)?.let { return SafetyAssessment(null, it) }
+        }
         // Retain an explicit final identity check for every accepted snapshot.
         if (apps.any { it.packageName.isNullOrBlank() }) {
             return SafetyAssessment(null, SafetyIssue.INPUT_INSPECTION_INCOMPLETE)
@@ -123,9 +143,6 @@ object AppPairPolicy {
         if (apps.none { it.focused }) {
             return SafetyAssessment(null, SafetyIssue.NO_FOCUSED_TARGET)
         }
-        if (windows.any { it.layer == WindowLayer.INPUT_METHOD }) {
-            return SafetyAssessment(null, SafetyIssue.KEYBOARD)
-        }
         if (windows.any {
             it.layer == WindowLayer.ACCESSIBILITY &&
                 it.packageName != controllerPackage
@@ -155,11 +172,30 @@ object AppPairPolicy {
         controllerPackage: String,
         workArea: SplitWorkArea,
         approval: AppPairApproval?,
+    ): SafetyAssessment = verify(windows, controllerPackage, workArea, approval, requireInputTree = true)
+
+    // Calibration only displays and edits local coordinates. It cannot authorize a tap.
+    internal fun verifyLayoutForCalibration(
+        windows: List<ObservedWindow>,
+        controllerPackage: String,
+        workArea: SplitWorkArea,
+        approval: AppPairApproval?,
+    ): SafetyAssessment = verify(windows, controllerPackage, workArea, approval, requireInputTree = false)
+
+    private fun verify(
+        windows: List<ObservedWindow>,
+        controllerPackage: String,
+        workArea: SplitWorkArea,
+        approval: AppPairApproval?,
+        requireInputTree: Boolean,
     ): SafetyAssessment {
         if (approval == null) {
             return SafetyAssessment(null, SafetyIssue.UNAPPROVED_PAIR)
         }
-        val assessment = select(windows, controllerPackage, workArea)
+        val assessment = select(windows, controllerPackage, workArea, requireInputTree)
+        if (assessment.issue.canRetrySamePair() && !matchesKnownWindows(windows, approval)) {
+            return SafetyAssessment(null, SafetyIssue.PAIR_CHANGED)
+        }
         return if (!assessment.allowed || assessment.pair == null) {
             assessment
         } else if (!approval.matches(assessment.pair)) {
@@ -167,6 +203,22 @@ object AppPairPolicy {
         } else {
             assessment
         }
+    }
+
+    private fun matchesKnownWindows(windows: List<ObservedWindow>, approval: AppPairApproval): Boolean {
+        val applications = windows.filter { it.layer == WindowLayer.APPLICATION }
+        if (applications.size != 2) return false
+
+        fun matches(id: Int, packageName: String, bounds: ScreenRect): Boolean {
+            val window = applications.singleOrNull { it.windowId == id } ?: return false
+            return window.displayId == approval.displayId && window.bounds == bounds &&
+                (window.packageName.isNullOrBlank() || window.packageName == packageName)
+        }
+
+        // A missing package is still an inspection failure. It only prevents
+        // this check from proving the approved pair has changed.
+        return matches(approval.leftWindowId, approval.leftPackage, approval.leftBounds) &&
+            matches(approval.rightWindowId, approval.rightPackage, approval.rightBounds)
     }
 
     private fun covers(overlay: ScreenRect, target: ScreenRect): Boolean {
