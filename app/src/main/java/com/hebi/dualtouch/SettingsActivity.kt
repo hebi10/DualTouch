@@ -148,11 +148,17 @@ class SettingsActivity : Activity() {
         suffix: String,
         modify: (Int) -> TouchAppearance,
     ) {
-        val headingRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        headingRow.addView(UiKit.text(this, palette, "$title ($min–$max$suffix)", 14f, true),
+        val stacked = viewport.stackSettingValues
+        val headingRow = LinearLayout(this).apply {
+            orientation = if (stacked) LinearLayout.VERTICAL else LinearLayout.HORIZONTAL
+        }
+        val heading = UiKit.text(this, palette, "$title ($min–$max$suffix)", 14f, true)
+        if (stacked) UiKit.add(headingRow, heading)
+        else headingRow.addView(heading,
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         val number = UiKit.text(this, palette, "$current$suffix", 14f, true)
-        headingRow.addView(number)
+        if (stacked) UiKit.add(headingRow, number, topDp = 4)
+        else headingRow.addView(number)
         UiKit.add(root, headingRow, topDp = 8)
         val seek = SeekBar(this).apply {
             this.max = max - min
@@ -192,7 +198,7 @@ class SettingsActivity : Activity() {
         val chips = mutableListOf<Triple<ColorChoice, TextView, TextView>>()
         var row: LinearLayout? = null
         TouchColors.choices.forEachIndexed { index, choice ->
-            if (index % 4 == 0) {
+            if (index % viewport.paletteColumns == 0) {
                 row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
                 UiKit.add(choices, requireNotNull(row), topDp = if (index == 0) 0 else 6)
             }
@@ -216,16 +222,23 @@ class SettingsActivity : Activity() {
             }
             group.addView(marker, LinearLayout.LayoutParams(UiKit.dp(this, 48), UiKit.dp(this, 48)))
             group.addView(name)
-            requireNotNull(row).addView(group, LinearLayout.LayoutParams(UiKit.dp(this, 56), ViewGroup.LayoutParams.WRAP_CONTENT))
+            val compactPalette = viewport.paletteColumns == 2
+            requireNotNull(row).addView(group, LinearLayout.LayoutParams(
+                if (compactPalette) 0 else UiKit.dp(this, 56), ViewGroup.LayoutParams.WRAP_CONTENT,
+                if (compactPalette) 1f else 0f))
             chips.add(Triple(choice, marker, name))
         }
-        val horizontal = HorizontalScrollView(this).apply {
-            isFillViewport = true
-            isHorizontalScrollBarEnabled = true
-            contentDescription = "$title 색상 선택 목록"
-            addView(choices)
+        if (viewport.paletteColumns == 2) {
+            UiKit.add(root, choices, topDp = 8)
+        } else {
+            val horizontal = HorizontalScrollView(this).apply {
+                isFillViewport = true
+                isHorizontalScrollBarEnabled = true
+                contentDescription = "$title 색상 선택 목록"
+                addView(choices)
+            }
+            UiKit.add(root, horizontal, topDp = 8)
         }
-        UiKit.add(root, horizontal, topDp = 8)
     }
 
     private fun setChipState(
@@ -250,20 +263,23 @@ class SettingsActivity : Activity() {
 
     private fun redrawPreview() {
         previewRow.removeAllViews()
-        previewRow.addView(previewDot("대기", appearance.thumbColor,
-            appearance.thumbSizeDp, appearance.thumbOpacityPercent),
-            LinearLayout.LayoutParams(UiKit.dp(this, appearance.thumbSizeDp),
-                UiKit.dp(this, appearance.thumbSizeDp)))
+        fun addPreview(label: String, color: Int, size: Int, opacity: Int) {
+            val dot = previewDot(if (viewport.stackSettingValues) "" else label, color, size, opacity)
+            dot.contentDescription = "$label 기준 미리보기"
+            val params = LinearLayout.LayoutParams(UiKit.dp(this, size), UiKit.dp(this, size))
+            if (viewport.stackSettingValues) {
+                val group = UiKit.column(this, 4).apply { gravity = Gravity.CENTER_HORIZONTAL }
+                group.addView(dot, params)
+                UiKit.add(group, UiKit.centeredLabel(this, label, palette.text, 12f), topDp = 4)
+                previewRow.addView(group, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+            } else previewRow.addView(dot, params)
+        }
+        addPreview("대기", appearance.thumbColor, appearance.thumbSizeDp, appearance.thumbOpacityPercent)
         previewRow.addView(space(18))
-        previewRow.addView(previewDot("직접", appearance.directColor,
-            appearance.markerSizeDp, appearance.markerOpacityPercent),
-            LinearLayout.LayoutParams(UiKit.dp(this, appearance.markerSizeDp),
-                UiKit.dp(this, appearance.markerSizeDp)))
+        addPreview("직접", appearance.directColor, appearance.markerSizeDp, appearance.markerOpacityPercent)
         previewRow.addView(space(12))
-        previewRow.addView(previewDot("자동", appearance.automaticColor,
-            appearance.markerSizeDp, appearance.markerOpacityPercent),
-            LinearLayout.LayoutParams(UiKit.dp(this, appearance.markerSizeDp),
-                UiKit.dp(this, appearance.markerSizeDp)))
+        addPreview("자동", appearance.automaticColor, appearance.markerSizeDp, appearance.markerOpacityPercent)
     }
 
     private fun persist() {

@@ -52,7 +52,7 @@ class OverlayCaptureRunner : Instrumentation() {
         try {
             check(Regex("[a-f0-9]{40}").matches(source)) { "Missing exact source SHA" }
             check(targetContext.packageName == LEFT)
-            check(scenario in setOf("countdown", "calibration", "home-return")) { "Unknown scenario" }
+            check(scenario in setOf("countdown", "calibration", "home-return", "vertical-idle")) { "Unknown scenario" }
             automation = checkNotNull(getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES))
             val info = checkNotNull(automation.serviceInfo)
             val observerOriginallyRequestedKeys =
@@ -251,6 +251,19 @@ class OverlayCaptureRunner : Instrumentation() {
 
     private fun requireSplit() = check(splitVisible()) { "Two disjoint, visible probe windows required" }
 
+    private fun requireVerticalSplit() {
+        requireSplit()
+        val windows = probeWindows()
+        val first = checkNotNull(windows[LEFT])
+        val second = checkNotNull(windows[RIGHT])
+        val upper = if (first.top <= second.top) first else second
+        val lower = if (first.top <= second.top) second else first
+        check(upper.bottom <= lower.top &&
+            maxOf(upper.left, lower.left) < minOf(upper.right, lower.right)) {
+            "Actual probe bounds are not an upper/lower Android split"
+        }
+    }
+
     private fun taskId(pkg: String): Int {
         val dump = shell("dumpsys activity activities")
         val candidates = dump.lineSequence()
@@ -280,6 +293,11 @@ class OverlayCaptureRunner : Instrumentation() {
             }
         }
         waitFor("actual Android split with both probe apps", 8000) { splitVisible() }
+        if (scenario == "vertical-idle") {
+            requireVerticalSplit()
+            observations.put(JSONObject().put("split_orientation", "vertical")
+                .put("actual_vertical_bounds_verified", true))
+        }
         observations.put(JSONObject().put("split_window_bounds",
             JSONObject().apply { for ((pkg, bounds) in probeWindows()) put(pkg, bounds.flattenToString()) }))
     }
@@ -502,6 +520,7 @@ class OverlayCaptureRunner : Instrumentation() {
 
     private fun verifyDesignState(name: String) {
         requireSplit()
+        if (scenario == "vertical-idle") requireVerticalSplit()
         val nodes = visibleNodes().filter { it.pkg == APP }
         val thumb = nodes.firstOrNull { it.description.startsWith("DualTouch Thumb.") }
         fun text(value: String) = nodes.any { it.text == value }
@@ -585,7 +604,9 @@ class OverlayCaptureRunner : Instrumentation() {
     }
 
     private fun awaitPairApprovalAfterSearch(): VisibleNode {
-        val directions = setOf("왼쪽 직접 → 오른쪽 자동 연결", "위쪽 직접 → 아래쪽 자동 연결")
+        val directions = if (scenario == "vertical-idle") {
+            setOf("위쪽 직접 → 아래쪽 자동 연결")
+        } else setOf("왼쪽 직접 → 오른쪽 자동 연결", "위쪽 직접 → 아래쪽 자동 연결")
         repeat(3) { attempt ->
             requireSplit()
             val result = awaitNode("pair selection outcome", 12000) {
@@ -634,6 +655,17 @@ class OverlayCaptureRunner : Instrumentation() {
         val pairNodes = visibleNodes().filter { it.pkg == APP }
         check(pairNodes.any { it.text.contains(LEFT) } && pairNodes.any { it.text.contains(RIGHT) }) {
             "The approval panel must identify both actual probe packages"
+        }
+        if (scenario == "vertical-idle") {
+            requireVerticalSplit()
+            val labels = pairNodes.map { it.text }
+            check("위쪽 직접 → 아래쪽 자동 연결" in labels &&
+                "아래쪽 직접 → 위쪽 자동 연결" in labels &&
+                "왼쪽 직접 → 오른쪽 자동 연결" !in labels &&
+                "오른쪽 직접 → 왼쪽 자동 연결" !in labels) {
+                "Approval choices must match actual upper/lower geometry"
+            }
+            observations.put(JSONObject().put("vertical_directions_verified", true))
         }
         if (captureDesigns) screenshot("DES-08-pair-selection", "two actual probe windows and explicit approval")
         tap(approval)
@@ -690,10 +722,23 @@ class OverlayCaptureRunner : Instrumentation() {
         awaitNode("calibration title") { it.pkg == APP && it.text == "영점 조절" }
         recordOverlayInventory("calibration_visible")
         requireSplit()
+        if (scenario == "vertical-idle") {
+            requireVerticalSplit()
+            awaitNode("actual upper/lower calibration label") {
+                it.pkg == APP && it.text.contains("앱 분할 배치: 세로 (상·하)")
+            }
+            awaitNode("default horizontal guide for vertical split") {
+                it.pkg == APP && it.text == "가로/세로 기준선 변경 · 가로 기준선"
+            }
+        }
         screenshot("DES-10-calibration", "real calibration overlay; both reference markers")
         stage = "calibration / cancel"
-        tapText(APP, "취소")
+        if (scenario == "vertical-idle") tapWithScroll(APP, "취소")
+        else tapText(APP, "취소")
         thumb("대기")
+        if (scenario == "vertical-idle") {
+            observations.put(JSONObject().put("vertical_calibration_verified", true))
+        }
     }
 
     private fun captureCountdown() {
@@ -782,6 +827,10 @@ class OverlayCaptureRunner : Instrumentation() {
             .put("original_connected_home_design_verified", false))
         stage = "home-return / hide floating"
         val labels = visibleNodes().filter { it.pkg == APP }.map { it.text }
+        val safeHomeLabel = labels.firstOrNull { it in setOf(
+            "입력 중지", "분할 앱 연결 필요", "플로팅 표시 대기", "접근성 권한 필요"
+        ) }
+        observations.put(JSONObject().put("actual_safe_home_status", safeHomeLabel ?: JSONObject.NULL))
         if ("플로팅 숨기기" in labels) {
             tapWithScroll(APP, "플로팅 숨기기")
             observations.put(JSONObject().put("hide_action_used", true))
@@ -856,6 +905,17 @@ class OverlayCaptureRunner : Instrumentation() {
         openSplit()
         connectAndOpenReadyMenu(captureDesigns = true)
         if (scenario == "home-return") {
+            captureHomeReturn()
+            return
+        }
+        if (scenario == "vertical-idle") {
+            // Idle-only visual verification; never press Execute or dispatch input.
+            captureCalibration()
+            requireVerticalSplit()
+            tap(thumb("대기"))
+            awaitNode("ready menu after vertical calibration cancellation") {
+                it.pkg == APP && it.text == "영점 조절"
+            }
             captureHomeReturn()
             return
         }

@@ -263,10 +263,19 @@ class MainActivity : Activity() {
                     val second = if (horizontal) "오른쪽" else "아래쪽"
                     val source = if (side == TouchSide.LEFT) first else second
                     val target = if (side == TouchSide.LEFT) second else first
-                    val row = UiKit.panePair(this, 8, 0.5f)
-                    UiKit.add(row.primary, appIdentityTile(this, palette, pair.left.packageName, if (side == TouchSide.LEFT) "$first · 직접" else "$first · 자동"))
-                    UiKit.add(row.secondary, appIdentityTile(this, palette, pair.right.packageName, if (side == TouchSide.RIGHT) "$second · 직접" else "$second · 자동"))
-                    UiKit.add(container, row.row)
+                    val firstTile = appIdentityTile(this, palette, pair.left.packageName,
+                        if (side == TouchSide.LEFT) "$first · 직접" else "$first · 자동")
+                    val secondTile = appIdentityTile(this, palette, pair.right.packageName,
+                        if (side == TouchSide.RIGHT) "$second · 직접" else "$second · 자동")
+                    if (viewport.stackToolbarActions || !horizontal) {
+                        UiKit.add(container, firstTile)
+                        UiKit.add(container, secondTile, topDp = 8)
+                    } else {
+                        val row = UiKit.panePair(this, 8, 0.5f)
+                        UiKit.add(row.primary, firstTile)
+                        UiKit.add(row.secondary, secondTile)
+                        UiKit.add(container, row.row)
+                    }
                     UiKit.add(container, UiKit.centeredLabel(this, "$source 직접 → $target 자동", palette.text, 13f), topDp = 8)
                 }
             }
@@ -323,9 +332,21 @@ class MainActivity : Activity() {
         val icon = UiKit.iconView(this, kind, palette.text, 24)
         row.addView(icon, LinearLayout.LayoutParams(UiKit.dp(this, 28), UiKit.dp(this, 28)))
         val title = UiKit.text(this, palette, label, 15f, true)
-        row.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply { marginStart = UiKit.dp(this@MainActivity, 8) })
-        val value = UiKit.text(this, palette, "", 14f, true).apply { gravity = Gravity.END }
-        row.addView(value, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        val value = UiKit.text(this, palette, "", 14f, true)
+        if (viewport.stackSettingValues) {
+            val labels = UiKit.column(this)
+            UiKit.add(labels, title)
+            UiKit.add(labels, value, topDp = 4)
+            row.addView(labels, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = UiKit.dp(this@MainActivity, 8)
+            })
+        } else {
+            row.addView(title, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
+                marginStart = UiKit.dp(this@MainActivity, 8)
+            })
+            value.gravity = Gravity.END
+            row.addView(value, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
         if (parent.childCount > 0) {
             parent.addView(View(this).apply { setBackgroundColor(palette.line) }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, UiKit.dp(this, 1)))
         }
@@ -359,7 +380,7 @@ class MainActivity : Activity() {
             val padding = UiKit.dp(this, 4)
             root.setPadding(padding, UiKit.dp(this, 6), padding, UiKit.dp(this, 20))
         }
-        UiKit.add(root, UiKit.toolbar(this, palette, "DualTouch", trailing = "표시 설정", onTrailing = { openDisplaySettings() }, trailingIcon = LineIcon.GEAR))
+        UiKit.add(root, UiKit.toolbar(this, palette, "DualTouch", trailing = "표시 설정", onTrailing = { openDisplaySettings() }, trailingIcon = LineIcon.GEAR, stackTrailing = viewport.stackToolbarActions))
         val pageRoot = root
         val primary: LinearLayout
         val secondary: LinearLayout

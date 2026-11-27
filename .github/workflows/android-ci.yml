@@ -93,7 +93,7 @@ jobs:
     name: Actual emulator UI screenshots (not device touch QA)
     needs: build-and-test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
@@ -138,7 +138,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        scenario: [countdown, calibration, home-return]
+        scenario: [countdown, calibration, home-return, vertical-idle]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -162,12 +162,12 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Install the emulator gRPC client
-        if: matrix.scenario != 'home-return'
+        if: (matrix.scenario == 'countdown' || matrix.scenario == 'calibration')
         run: |
           GOBIN="$RUNNER_TEMP/grpc-tools" go install github.com/fullstorydev/grpcurl/cmd/grpcurl@v1.9.4
           echo "$RUNNER_TEMP/grpc-tools" >> "$GITHUB_PATH"
       - name: Restrict emulator gRPC access to loopback
-        if: matrix.scenario != 'home-return'
+        if: (matrix.scenario == 'countdown' || matrix.scenario == 'calibration')
         run: |
           sudo iptables --wait 5 --insert INPUT ! --in-interface lo --protocol tcp --dport 8556 --jump DROP
           sudo ip6tables --wait 5 --insert INPUT ! --in-interface lo --protocol tcp --dport 8556 --jump DROP
@@ -182,10 +182,10 @@ jobs:
           arch: x86_64
           profile: pixel_6
           # The host sends a virtual hardware key for the emergency-stop check.
-          enable-hw-keyboard: ${{ matrix.scenario != 'home-return' }}
+          enable-hw-keyboard: ${{ (matrix.scenario == 'countdown' || matrix.scenario == 'calibration') }}
           emulator-options: >-
             -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-            ${{ matrix.scenario != 'home-return' && '-grpc 8556' || '' }}
+            ${{ (matrix.scenario == 'countdown' || matrix.scenario == 'calibration') && '-grpc 8556' || '' }}
           script: python3 scripts/capture_overlay_screens.py
       - name: Preserve captured states and diagnostic report
         if: always()

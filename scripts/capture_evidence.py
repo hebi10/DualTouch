@@ -1,5 +1,6 @@
 """Verify immutable, already captured emulator PNG bytes; do not take a new screenshot."""
 import hashlib
+import re
 import struct
 import subprocess
 import time
@@ -25,3 +26,24 @@ def read_verified_png(reader, name, expected_hash, width, height, pause=time.sle
             if attempt < 2:
                 pause(0.3 * (attempt + 1))
     raise AssertionError(f"Cannot recover verified PNG {name}: {last_error}") from last_error
+
+
+def controller_resumed(dump):
+    return bool(re.search(
+        r"(?m)^\s*(?:topResumedActivity|mResumedActivity)\s*[:=]\s*ActivityRecord\{[^\n]*\scom\.hebi\.dualtouch/(?:com\.hebi\.dualtouch)?\.(?:MainActivity|SettingsActivity)(?:\s|\})",
+        dump,
+    ))
+
+
+def messages_anr_focused(dump):
+    return bool(re.search(
+        r"(?m)^\s*mCurrentFocus=Window\{[^\n]*Application Not Responding: com\.google\.android\.apps\.messaging\}\s*$",
+        dump,
+    ))
+
+
+def controller_focused(dump):
+    return bool(re.search(
+        r"(?m)^\s*mCurrentFocus=Window\{[^\n]*\scom\.hebi\.dualtouch/(?:com\.hebi\.dualtouch)?\.(?:MainActivity|SettingsActivity)\}\s*$",
+        dump,
+    ))

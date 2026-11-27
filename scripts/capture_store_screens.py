@@ -6,6 +6,8 @@ import re
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+
+from capture_evidence import controller_focused, controller_resumed, messages_anr_focused
 from pathlib import Path
 
 PACKAGE = "com.hebi.dualtouch"
@@ -13,6 +15,7 @@ OUTPUT = Path("qa/store-screenshots")
 OUTPUT.mkdir(parents=True, exist_ok=True)
 records = []
 fixture_launcher_recovered = False
+fixture_messages_recovered = False
 
 def prepare_fixture():
     # This script changes display configuration and must only run in disposable CI.
@@ -76,6 +79,40 @@ def shell(*args):
     return adb("shell", *args).decode("utf-8", errors="replace")
 
 
+def recover_messages_anr(activity_dump):
+    global fixture_messages_recovered
+    if fixture_messages_recovered or os.environ.get("GITHUB_ACTIONS") != "true":
+        return False
+    if shell("getprop", "ro.kernel.qemu").strip() != "1":
+        return False
+    if any(shell(*command).strip() != "1" for command in (
+        ("getprop", "sys.boot_completed"),
+        ("settings", "get", "global", "device_provisioned"),
+        ("settings", "get", "secure", "user_setup_complete"),
+    )):
+        return False
+    if shell("settings", "get", "secure", "accessibility_enabled").strip() == "1":
+        return False
+    # Require the observed and fresh resumed controller, plus the exact current ANR.
+    if not controller_resumed(activity_dump) or not messages_anr_focused(activity_dump):
+        return False
+    if not controller_resumed(shell("dumpsys", "activity", "activities")):
+        return False
+    if not messages_anr_focused(shell("dumpsys", "window", "windows")):
+        return False
+    fixture_messages_recovered = True
+    (OUTPUT / "fixture-messages-anr.png").write_bytes(adb("exec-out", "screencap", "-p"))
+    (OUTPUT / "fixture-messages-recovery.json").write_text(json.dumps({
+        "source_commit": os.environ["SOURCE_SHA"],
+        "reason": "confirmed Google Messages ANR over a resumed DualTouch Activity",
+        "scope": "provisioned isolated emulator, accessibility disabled, one attempt",
+        "action": "force-stop exact fixture package only; no controller relaunch"
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    shell("am", "force-stop", "com.google.android.apps.messaging")
+    time.sleep(3)
+    return True
+
+
 def nodes():
     for _ in range(6):
         if recover_initial_launcher_anr():
@@ -85,7 +122,8 @@ def nodes():
             shell("uiautomator", "dump", "--compressed", "/sdcard/dualtouch-window.xml")
             raw = adb("exec-out", "cat", "/sdcard/dualtouch-window.xml")
             tree = ET.fromstring(raw)
-            if any(n.get("package") == PACKAGE for n in tree.iter("node")):
+            if (any(n.get("package") == PACKAGE for n in tree.iter("node")) and
+                    controller_focused(shell("dumpsys", "window", "windows"))):
                 return tree
         except (ET.ParseError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             pass
@@ -96,16 +134,16 @@ def nodes():
     (OUTPUT / "diagnostic-crash.txt").write_text(shell("logcat", "-d", "-b", "crash"), encoding="utf-8")
     # Preserve the first failure evidence, then permit the existing one-time
     # guarded launcher recovery if the ANR appeared during the last dump.
-    if recover_initial_launcher_anr(activity_dump=activity):
+    if recover_initial_launcher_anr(activity_dump=activity) or recover_messages_anr(activity):
         return nodes()
-    raise AssertionError("App accessibility root was unavailable after bounded retries")
+    raise AssertionError("App accessibility root or focus was unavailable after bounded retries")
 
 
 def tap(text):
     for _ in range(8):
         tree = nodes()
         for node in tree.iter("node"):
-            if node.get("text") == text:
+            if node.get("package") == PACKAGE and node.get("text") == text:
                 bounds = [int(v) for v in re.findall(r"\d+", node.get("bounds", ""))]
                 if len(bounds) == 4 and bounds[2] > bounds[0] and bounds[3] > bounds[1]:
                     shell("input", "tap", str((bounds[0] + bounds[2]) // 2),
@@ -119,14 +157,15 @@ def tap(text):
     raise AssertionError("Missing visible control: " + text)
 
 
-def scroll_to_visible_text(text):
-    for _ in range(9):
+def scroll_to_visible_text(text, max_steps=9):
+    for _ in range(max_steps):
         tree = nodes()
-        if any(node.get("text") == text for node in tree.iter("node")):
+        if any(node.get("package") == PACKAGE and node.get("text") == text
+               and node.get("bounds") not in (None, "[0,0][0,0]") for node in tree.iter("node")):
             return
         width, height = map(int, re.findall(r"(\d+)x(\d+)", shell("wm", "size"))[-1])
-        shell("input", "swipe", str(width // 2), str(height * 3 // 4),
-              str(width // 2), str(height // 3), "450")
+        shell("input", "swipe", str(width // 8), str(height * 3 // 4),
+              str(width // 8), str(height // 3), "450")
         time.sleep(0.7)
     raise AssertionError("Missing visible section: " + text)
 
@@ -160,18 +199,27 @@ def verify_accessibility_settings():
 def capture(name):
     tree = nodes()
     assert any(n.get("package") == PACKAGE for n in tree.iter("node")), "App UI missing"
+    assert controller_focused(shell("dumpsys", "window", "windows")), "Controller not focused before screenshot"
+    data = adb("exec-out", "screencap", "-p")
+    assert controller_focused(shell("dumpsys", "window", "windows")), "Controller lost focus during screenshot"
+    assert data.startswith(b"\x89PNG\r\n\x1a\n"), "Invalid screenshot"
     path = OUTPUT / (name + ".png")
-    path.write_bytes(adb("exec-out", "screencap", "-p"))
-    assert path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"), "Invalid screenshot"
+    path.write_bytes(data)
     records.append({"file": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                     "size": shell("wm", "size").strip(),
-                    "density": shell("wm", "density").strip()})
+                    "density": shell("wm", "density").strip(),
+                    "font_scale": shell("settings", "get", "system", "font_scale").strip(),
+                    "controller_focused_before_after": True})
     print("Captured:", name, flush=True)
 
 
+completed = False
+original_font = None
 try:
     assert subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == os.environ["SOURCE_SHA"], "Actual checkout differs from requested source"
     prepare_fixture()
+    original_font = shell("settings", "get", "system", "font_scale").strip()
+    shell("settings", "put", "system", "font_scale", "1.0")
     shell("wm", "size", "1080x1920")
     shell("wm", "density", "420")
     shell("cmd", "uimode", "night", "no")
@@ -232,6 +280,36 @@ try:
         capture(label + "-01-home-light")
         tap("표시 설정")
         capture(label + "-02-settings-light")
+
+    # Resized emulator viewports only; actual hardware QA remains unverified.
+    for label, size, density, scale in [
+        ("compact320-font200", "960x1920", "480", "2.0"),
+        ("expanded-font200", "1800x1440", "320", "2.0"),
+        ("short-landscape", "1800x800", "320", "1.0"),
+    ]:
+        shell("wm", "size", size)
+        shell("wm", "density", density)
+        shell("settings", "put", "system", "font_scale", scale)
+        launch()
+        assert float(shell("settings", "get", "system", "font_scale").strip()) == float(scale)
+        scroll_to_visible_text("현재 상태", max_steps=15)
+        capture(label + "-home")
+        tap("표시 설정")
+        scroll_to_visible_text("미리보기", max_steps=15)
+        capture(label + "-settings")
+        if scale == "2.0":
+            scroll_to_visible_text("접근성 사용 동의 철회", max_steps=40)
+            capture(label + "-settings-bottom")
+            launch()
+            scroll_to_visible_text("접근성 권한 안내", max_steps=25)
+            tap("접근성 권한 안내")
+            dialog_nodes = nodes()
+            dialog_texts = {n.get("text") for n in dialog_nodes.iter("node") if n.get("package") == PACKAGE}
+            assert {"나중에", "동의하고 설정 열기"} <= dialog_texts, "Consent choices not accessible"
+            capture(label + "-disclosure")
+            tap("나중에")
+            assert not any(n.get("text") == "동의하고 설정 열기" for n in nodes().iter("node")), "Consent dismissal failed"
+    completed = True
 finally:
     (OUTPUT / "capture-metadata.json").write_text(json.dumps({
         "source_commit": os.environ.get("SOURCE_SHA", "unknown"),
@@ -243,8 +321,14 @@ finally:
         "physical_tablet_verified": False,
         "touch_mirroring_verified": False,
         "physical_foldable_verified": False,
+        "completed": completed,
         "captures": records,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
-    shell("wm", "size", "reset")
-    shell("wm", "density", "reset")
-    shell("cmd", "uimode", "night", "no")
+    if original_font is not None:
+        if original_font == "null":
+            shell("settings", "delete", "system", "font_scale")
+        else:
+            shell("settings", "put", "system", "font_scale", original_font)
+        shell("wm", "size", "reset")
+        shell("wm", "density", "reset")
+        shell("cmd", "uimode", "night", "no")

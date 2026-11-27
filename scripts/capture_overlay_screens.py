@@ -20,13 +20,16 @@ SCENARIO = os.environ["OVERLAY_SCENARIO"]
 SDK_SETUP = "com.google.android.googlesdksetup"
 COMMON = {"DES-06-thumb-ready.png", "DES-07-thumb-menu.png", "DES-08-pair-selection.png"}
 SCENARIO_CAPTURE = {"countdown": "DES-09-thumb-running.png", "calibration": "DES-10-calibration.png"}
-assert SCENARIO in {"countdown", "calibration", "home-return"}
+IDLE_SCENARIOS = {"home-return", "vertical-idle"}
+assert SCENARIO in set(SCENARIO_CAPTURE) | IDLE_SCENARIOS
 EXPECTED = COMMON | ({SCENARIO_CAPTURE[SCENARIO]} if SCENARIO in SCENARIO_CAPTURE else set())
+if SCENARIO == "vertical-idle":
+    EXPECTED |= {"DES-10-calibration.png"}
 HOME_EVIDENCE = {"QA-home-after-window-change.png", "QA-home-after-hide.png"}
 ALLOWED = EXPECTED | {"QA-stopped.png", "diagnostic-failure.png",
                       "diagnostic-countdown.png", "diagnostic-calibration.png",
                       "diagnostic-stop-failure.png", "diagnostic-launcher-anr.png"}
-if SCENARIO == "home-return":
+if SCENARIO in IDLE_SCENARIOS:
     ALLOWED |= HOME_EVIDENCE
 
 
@@ -182,7 +185,7 @@ def collect():
     assert final_report, "Only partial capture checkpoint recovered"
     assert report["completed"], report.get("error")
     assert verified == EXPECTED, f"Missing actual design states: {EXPECTED - verified}"
-    if SCENARIO == "home-return":
+    if SCENARIO in IDLE_SCENARIOS:
         captured = {item["file"] for item in report["captures"]}
         assert HOME_EVIDENCE <= captured, "Missing actual home transition evidence"
         assert any(item.get("home_return_safe_state_verified") is True and
@@ -190,6 +193,12 @@ def collect():
                    for item in report["observations"]), "Safe home transition not verified"
         assert any(item.get("home_hide_verified") is True for item in report["observations"]), "Floating hide not verified"
         assert not (verified & HOME_EVIDENCE), "Alternate home state must not count as a connected-design match"
+    if SCENARIO == "vertical-idle":
+        observations = report["observations"]
+        assert any(item.get("actual_vertical_bounds_verified") is True and
+                   item.get("split_orientation") == "vertical" for item in observations), "No actual upper/lower split evidence"
+        assert any(item.get("vertical_directions_verified") is True for item in observations), "Upper/lower approval choices unverified"
+        assert any(item.get("vertical_calibration_verified") is True for item in observations), "Vertical calibration/cancel unverified"
     report["host_capture_verified"] = True
     (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return report
@@ -210,8 +219,12 @@ try:
         one(ROOT / "test", "*.apk"),
     ]:
         adb("install", "-r", str(path), timeout=90)
-    adb("shell", "wm", "size", "1680x1440")
-    adb("shell", "wm", "density", "320")
+    if SCENARIO == "vertical-idle":
+        adb("shell", "wm", "size", "1080x2160")
+        adb("shell", "wm", "density", "420")
+    else:
+        adb("shell", "wm", "size", "1680x1440")
+        adb("shell", "wm", "density", "320")
     adb("shell", "cmd", "uimode", "night", "no")
     adb("shell", "wm", "dismiss-keyguard")
     prepare_fixture()
@@ -228,8 +241,8 @@ try:
     # Copy all verified screenshots before evaluating the stop result.
     report = collect()
     assert code == 0 and b"INSTRUMENTATION_CODE: -1" in stdout, "Instrumentation did not finish successfully"
-    if SCENARIO == "home-return":
-        assert not requested and not callbacks, "Idle home scenario must not request a hardware stop"
+    if SCENARIO in IDLE_SCENARIOS:
+        assert not requested and not callbacks, "Idle scenario must not request or simulate a hardware stop"
     else:
         assert requested, "No hardware stop request was observed"
         assert command and command["press_ok"] and command["release_ok"], "Emulator hardware-button command failed"
