@@ -65,6 +65,8 @@ object UiKit {
     }
 
     fun applyWindowInsets(scroll: ScrollView) {
+        // Keep scrolling text and controls out of transparent system bars.
+        scroll.clipToPadding = true
         scroll.setOnApplyWindowInsetsListener { view, insets ->
             val systemBars = insets.getInsets(WindowInsets.Type.systemBars())
             view.setPadding(

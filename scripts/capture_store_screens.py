@@ -349,8 +349,19 @@ try:
             scroll_to_visible_text("접근성 권한 안내", max_steps=25)
             tap("접근성 권한 안내")
             dialog_nodes = nodes()
-            dialog_texts = {n.get("text") for n in dialog_nodes.iter("node") if n.get("package") == PACKAGE}
-            assert {"나중에", "동의하고 설정 열기"} <= dialog_texts, "Consent choices not accessible"
+            # Mere accessibility-node existence is insufficient: both actual
+            # buttons need fully visible >=48dp targets, not a clipped sliver.
+            density_dpi = int(re.findall(r"(\d+)", shell("wm", "density"))[-1])
+            minimum = 48 * density_dpi / 160
+            choices = {}
+            for n in dialog_nodes.iter("node"):
+                if n.get("package") == PACKAGE and n.get("class") == "android.widget.Button" and n.get("text") in {"나중에", "동의하고 설정 열기"}:
+                    bounds = list(map(int, re.findall(r"\d+", n.get("bounds", ""))))
+                    if len(bounds) == 4 and n.get("enabled") == "true" and bounds[2]-bounds[0] >= minimum and bounds[3]-bounds[1] >= minimum:
+                        choices[n.get("text")] = bounds
+            assert set(choices) == {"나중에", "동의하고 설정 열기"}, "Consent actions need fully accessible 48dp targets"
+            first, second = choices.values()
+            assert first[3] <= second[1] or second[3] <= first[1] or first[2] <= second[0] or second[2] <= first[0], "Consent actions overlap"
             capture(label + "-disclosure")
             tap("나중에")
             assert not any(n.get("text") == "동의하고 설정 열기" for n in nodes().iter("node")), "Consent dismissal failed"

@@ -484,6 +484,10 @@ class MainActivity : Activity() {
                 "볼륨 아래 키로 중지할 수 있습니다.")
         disclosureSection("Android 설정",
             "동의하면 Android 접근성 설정이 열립니다. 설치된 앱에서 DualTouch를 직접 켜세요.")
+        if (viewport.stackToolbarActions) {
+            showAdaptiveDisclosure(theme, disclosure)
+            return
+        }
         val dialog = AlertDialog.Builder(this, theme)
             .setTitle("접근성 권한")
             .setMessage(disclosure)
@@ -501,6 +505,50 @@ class MainActivity : Activity() {
             setTextColor(palette.text)
             minimumHeight = UiKit.dp(this@MainActivity, 48)
         }
+    }
+
+    private fun showAdaptiveDisclosure(theme: Int, disclosure: CharSequence) {
+        val dialog = AlertDialog.Builder(this, theme).create()
+        val body = UiKit.column(this, 16)
+        body.setBackgroundColor(palette.background)
+        val message = UiKit.column(this)
+        UiKit.add(message, UiKit.text(this, palette, "접근성 권한", 20f, true))
+        UiKit.add(message, UiKit.text(this, palette, "", 14f).apply {
+            text = disclosure
+        }, topDp = 12)
+        val scroll = ScrollView(this).apply {
+            isFillViewport = false
+            isVerticalScrollBarEnabled = true
+            addView(message)
+        }
+        val actions = UiKit.column(this)
+        UiKit.add(actions, UiKit.action(this, palette, "동의하고 설정 열기").apply {
+            setOnClickListener {
+                settings.accessibilityDisclosureAccepted = true
+                dialog.dismiss()
+                openAccessibilitySettings()
+            }
+        }, topDp = 8)
+        UiKit.add(actions, UiKit.action(this, palette, "나중에", primary = false).apply {
+            setOnClickListener { dialog.dismiss() }
+        }, topDp = 6)
+        val width = UiKit.dp(this, minOf((viewport.availableWidthDp - 24).coerceAtLeast(1), 560))
+        val height = UiKit.dp(this, minOf((viewport.availableHeightDp - 24).coerceAtLeast(1), 720))
+        val contentWidth = (width - UiKit.dp(this, 32)).coerceAtLeast(1)
+        actions.measure(View.MeasureSpec.makeMeasureSpec(contentWidth, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        // Keep both decisions outside the long disclosure in ordinary portrait
+        // windows. In unusually short windows make the entire content scroll.
+        if (height - UiKit.dp(this, 32) - actions.measuredHeight >= UiKit.dp(this, 96)) {
+            body.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+            UiKit.add(body, actions)
+        } else {
+            UiKit.add(message, actions, topDp = 12)
+            body.addView(scroll, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        }
+        dialog.setView(body, 0, 0, 0, 0)
+        dialog.show()
+        dialog.window?.setLayout(width, height)
     }
 
     private fun openAccessibilitySettings() {
