@@ -185,11 +185,21 @@ def tap(text):
     raise AssertionError("Missing visible control: " + text)
 
 
+def visible_texts(tree):
+    result = set()
+    for node in tree.iter("node"):
+        if node.get("package") != PACKAGE:
+            continue
+        bounds = list(map(int, re.findall(r"\d+", node.get("bounds", ""))))
+        if len(bounds) == 4 and bounds[2] > bounds[0] and bounds[3] - bounds[1] >= 16:
+            result.add(node.get("text", ""))
+    return result
+
+
 def scroll_to_visible_text(text, max_steps=9):
     for _ in range(max_steps):
         tree = nodes()
-        if any(node.get("package") == PACKAGE and node.get("text") == text
-               and node.get("bounds") not in (None, "[0,0][0,0]") for node in tree.iter("node")):
+        if text in visible_texts(tree):
             return
         swipe_content(tree)
     raise AssertionError("Missing visible section: " + text)
@@ -252,6 +262,11 @@ try:
     capture("phone-01-intro-light")
     scroll_to_visible_text("사용 순서")
     capture("phone-01b-intro-steps-light")
+    scroll_to_visible_text("Thumb에서 실행")
+    capture("phone-01c-intro-final-step-light")
+    scroll_to_visible_text("나중에")
+    assert "내용을 이해하고 계속" in visible_texts(nodes()), "Intro actions not both visible"
+    capture("phone-01d-intro-actions-light")
     tap("내용을 이해하고 계속")
     home = nodes()
     home_text = [node.get("text", "") for node in home.iter("node")]
@@ -277,13 +292,17 @@ try:
     verify_accessibility_settings()
     tap("분할 화면 안내")
     capture("phone-05-guide-light")
-    scroll_to_visible_text("분할 배치 예시")
+    scroll_to_visible_text("상하")
+    assert {"5:5", "6:4", "7:3", "상하"} <= visible_texts(nodes()), "All four actual diagram labels required"
     capture("phone-05c-guide-layouts-light")
     launch()
     tap("오류·중지 안내")
     capture("phone-05b-help-light")
     scroll_to_visible_text("이전 터치 처리 종료를 확인할 수 없을 때")
     capture("phone-05d-help-recovery-light")
+    scroll_to_visible_text("Android 접근성 설정 열기")
+    assert "플로팅 숨기기" in visible_texts(nodes()), "Help recovery actions not both visible"
+    capture("phone-05e-help-actions-light")
     # 1080x2160 at 420dpi approximates the 412x824dp design viewport.
     shell("wm", "size", "1080x2160")
     launch()
