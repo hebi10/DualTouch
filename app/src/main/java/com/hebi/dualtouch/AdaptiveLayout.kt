@@ -9,6 +9,7 @@ enum class WidthCategory { COMPACT, MEDIUM, EXPANDED }
 data class AdaptiveSpec(
     val availableWidthDp: Int,
     val availableHeightDp: Int,
+    val fontScale: Float = 1f,
 ) {
     val widthCategory: WidthCategory = when {
         availableWidthDp < 600 -> WidthCategory.COMPACT
@@ -17,7 +18,11 @@ data class AdaptiveSpec(
     }
 
     val useTwoPanes: Boolean =
-        widthCategory == WidthCategory.EXPANDED && availableHeightDp >= 480
+        widthCategory == WidthCategory.EXPANDED && availableHeightDp >= 480 && fontScale < 1.5f
+
+    val stackToolbarActions: Boolean = availableWidthDp < 360 || fontScale >= 1.5f
+    val stackSettingValues: Boolean = availableWidthDp < 360 || fontScale >= 1.5f
+    val paletteColumns: Int = if (availableWidthDp < 360 || fontScale >= 1.5f) 2 else 4
 
     val pageGutterDp: Int = when (widthCategory) {
         WidthCategory.COMPACT -> 12
@@ -43,8 +48,8 @@ data class AdaptiveSpec(
 }
 
 object AdaptiveLayout {
-    fun specFor(widthDp: Int, heightDp: Int) =
-        AdaptiveSpec(widthDp.coerceAtLeast(1), heightDp.coerceAtLeast(1))
+    fun specFor(widthDp: Int, heightDp: Int, fontScale: Float = 1f) =
+        AdaptiveSpec(widthDp.coerceAtLeast(1), heightDp.coerceAtLeast(1), fontScale)
 
     fun specFor(activity: Activity): AdaptiveSpec {
         val metrics = activity.windowManager.currentWindowMetrics
@@ -54,6 +59,6 @@ object AdaptiveLayout {
         val heightPx = (bounds.height() - insets.top - insets.bottom).coerceAtLeast(1)
         val density = activity.resources.displayMetrics.density
         return specFor((widthPx / density).roundToInt(),
-            (heightPx / density).roundToInt())
+            (heightPx / density).roundToInt(), activity.resources.configuration.fontScale)
     }
 }

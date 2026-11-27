@@ -600,10 +600,90 @@ internal class ThumbOverlayController(
             }, onTap = {})
         }
 
-        val column = panel()
+        val frame = panel()
+        val canFoldPanel = pair.orientation == SplitOrientation.VERTICAL
+        val column = if (canFoldPanel) UiKit.column(context) else frame
+        val folded = if (canFoldPanel) UiKit.column(context).apply { visibility = View.GONE } else null
+        var expandedPosition: Pair<Int, Int>? = null
+
+        fun setFolded(value: Boolean) {
+            val controls = folded ?: return
+            val scroll = menu as? ScrollView ?: return
+            val layout = scroll.layoutParams as? WindowManager.LayoutParams ?: return
+            if (!calibrating) return
+            // Keep the same attached modal and actual reference markers. A
+            // position change affects only this panel, not input or calibration.
+            if (value) {
+                val safe = safeWindowBounds()
+                val markerBounds = listOfNotNull(red?.view, white?.view).map { view ->
+                    val at = IntArray(2)
+                    view.getLocationOnScreen(at)
+                    ScreenRect(at[0], at[1], at[0] + view.width, at[1] + view.height)
+                }
+                if (markerBounds.size != 2 || markerBounds.any { !it.isValid }) return
+                val obstacles = markerBounds + listOfNotNull(thumb?.view).map { view ->
+                    val at = IntArray(2)
+                    view.getLocationOnScreen(at)
+                    ScreenRect(at[0], at[1], at[0] + view.width, at[1] + view.height)
+                }.filter { it.isValid }
+                column.visibility = View.GONE
+                controls.visibility = View.VISIBLE
+                val width = layout.width.coerceAtMost(safe.width()).coerceAtLeast(1)
+                frame.measure(
+                    View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED)
+                )
+                val place = com.hebi.dualtouch.core.CalibrationPanelPlacement.find(
+                    ScreenRect(safe.left, safe.top, safe.right, safe.bottom),
+                    width, frame.measuredHeight, obstacles, layout.x, layout.y, dp(4))
+                if (place == null) {
+                    controls.visibility = View.GONE
+                    column.visibility = View.VISIBLE
+                    scroll.requestLayout()
+                    Toast.makeText(context, "기준점을 가리지 않는 패널 공간이 부족합니다.", Toast.LENGTH_SHORT).show()
+                    return
+                }
+                expandedPosition = layout.x to layout.y
+                layout.x = place.left
+                layout.y = place.top
+            } else {
+                val original = expandedPosition ?: return
+                column.visibility = View.VISIBLE
+                controls.visibility = View.GONE
+                layout.x = original.first
+                layout.y = original.second
+                expandedPosition = null
+            }
+            try {
+                windowManager.updateViewLayout(scroll, layout)
+            } catch (_: RuntimeException) {
+                // Do not continue editing with an uncertain overlay state.
+                endCalibration()
+                return
+            }
+            scroll.requestLayout()
+            scroll.post { if (calibrating && menu === scroll) scroll.scrollTo(0, 0) }
+        }
+        folded?.let { controls ->
+            UiKit.add(frame, column)
+            UiKit.add(frame, controls)
+            if (safeWindowBounds().width() >= dp(276) &&
+                context.resources.configuration.fontScale <= 1.3f) {
+                val actions = UiKit.panePair(context, 4, 0.66f)
+                addButton(actions.primary, "영점 설정 펼치기") { setFolded(false) }
+                addButton(actions.secondary, "취소") { endCalibration() }
+                UiKit.add(controls, actions.row)
+            } else {
+                addButton(controls, "영점 설정 펼치기") { setFolded(false) }
+                addButton(controls, "취소") { endCalibration() }
+            }
+        }
         UiKit.add(column, UiKit.text(context, palette, "영점 조절", 18f, true).apply {
             setPadding(dp(4), dp(4), dp(4), dp(8))
         })
+        if (canFoldPanel) {
+            addButton(column, "기준점 조절 · 패널 접기") { setFolded(true) }
+        }
         val layoutLabel = if (pair.orientation == SplitOrientation.HORIZONTAL) {
             "가로 (좌·우)"
         } else {
@@ -752,7 +832,7 @@ internal class ThumbOverlayController(
         val preferredX = if (pair.orientation == SplitOrientation.HORIZONTAL && bounds.width() >= dp(720)) {
             (pair.left.bounds.right + pair.right.bounds.left) / 2 - panelWidth / 2
         } else bounds.left + dp(10)
-        if (!showMenu(column, 276, preferredX, bounds.top + dp(12))) {
+        if (!showMenu(frame, 276, preferredX, bounds.top + dp(12))) {
             endCalibration()
         }
     }

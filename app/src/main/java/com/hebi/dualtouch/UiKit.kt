@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
@@ -55,7 +56,17 @@ object UiKit {
         return PanePair(row, primary, secondary)
     }
 
+    fun applySystemBarAppearance(activity: Activity) {
+        val dark = (activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        val mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        activity.window.insetsController?.setSystemBarsAppearance(if (dark) 0 else mask, mask)
+    }
+
     fun applyWindowInsets(scroll: ScrollView) {
+        // Keep scrolling text and controls out of transparent system bars.
+        scroll.clipToPadding = true
         scroll.setOnApplyWindowInsetsListener { view, insets ->
             val systemBars = insets.getInsets(WindowInsets.Type.systemBars())
             view.setPadding(
@@ -153,38 +164,45 @@ object UiKit {
         button.stateListAnimator = null
     }
 
-    fun toolbar(context: Context, palette: UiPalette, title: String, back: (() -> Unit)? = null, trailing: String? = null, onTrailing: (() -> Unit)? = null, trailingIcon: LineIcon? = null): LinearLayout {
-        return LinearLayout(context).apply {
+    fun toolbar(context: Context, palette: UiPalette, title: String, back: (() -> Unit)? = null, trailing: String? = null, onTrailing: (() -> Unit)? = null, trailingIcon: LineIcon? = null, stackTrailing: Boolean = false): LinearLayout {
+        val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             minimumHeight = dp(context, 48)
-            if (back != null) {
-                val button = android.widget.ImageButton(context).apply {
-                    contentDescription = "뒤로가기"
-                    setImageDrawable(icon(context, LineIcon.BACK, palette.text))
-                    scaleType = android.widget.ImageView.ScaleType.CENTER
-                    background = shape(palette.background)
-                    stateListAnimator = null
-                    setOnClickListener { back() }
-                }
-                addView(button, LinearLayout.LayoutParams(dp(context, 48), dp(context, 48)).apply { marginEnd = dp(context, 4) })
-            }
-            addView(text(context, palette, title, 24f, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            if (trailing != null && onTrailing != null) {
-                val button = action(context, palette, trailing, false).apply {
-                    textSize = 13f
-                    minHeight = dp(context, 48)
-                    minimumHeight = dp(context, 48)
-                    minimumWidth = dp(context, 48)
-                    if (trailingIcon != null) {
-                        setCompoundDrawablesRelativeWithIntrinsicBounds(icon(context, trailingIcon, palette.text, 18), null, null, null)
-                        compoundDrawablePadding = dp(context, 6)
-                    }
-                    setOnClickListener { onTrailing() }
-                }
-                addView(button, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(context, 8) })
-            }
         }
+        if (back != null) {
+            val button = android.widget.ImageButton(context).apply {
+                contentDescription = "뒤로가기"
+                setImageDrawable(icon(context, LineIcon.BACK, palette.text))
+                scaleType = android.widget.ImageView.ScaleType.CENTER
+                background = shape(palette.background)
+                stateListAnimator = null
+                setOnClickListener { back() }
+            }
+            row.addView(button, LinearLayout.LayoutParams(dp(context, 48), dp(context, 48)).apply { marginEnd = dp(context, 4) })
+        }
+        row.addView(text(context, palette, title, 24f, true), LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        if (trailing != null && onTrailing != null) {
+            val button = action(context, palette, trailing, false).apply {
+                textSize = 13f
+                minHeight = dp(context, 48)
+                minimumHeight = dp(context, 48)
+                minimumWidth = dp(context, 48)
+                if (trailingIcon != null) {
+                    setCompoundDrawablesRelativeWithIntrinsicBounds(icon(context, trailingIcon, palette.text, 18), null, null, null)
+                    compoundDrawablePadding = dp(context, 6)
+                }
+                setOnClickListener { onTrailing() }
+            }
+            if (stackTrailing) {
+                return column(context).apply {
+                    add(this, row)
+                    add(this, button, topDp = 8)
+                }
+            }
+            row.addView(button, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { marginStart = dp(context, 8) })
+        }
+        return row
     }
 
     fun icon(context: Context, kind: LineIcon, color: Int, sizeDp: Int = 24) =

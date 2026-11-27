@@ -48,4 +48,24 @@ class AdaptiveLayoutTest {
         assertTrue(small.contentWidthDp > 0)
         assertFalse(small.useTwoPanes)
     }
+
+    @Test fun largeTextStacksControlsEvenInAnExpandedWindow() {
+        val large = AdaptiveLayout.specFor(1000, 720, 2f)
+        assertFalse(large.useTwoPanes)
+        assertTrue(large.stackToolbarActions)
+        assertTrue(large.stackSettingValues)
+        assertEquals(2, large.paletteColumns)
+        assertEquals(720, large.contentWidthDp)
+    }
+
+    @Test fun compactWidthAndNormalExpandedWidthPreserveUsableControls() {
+        val small = AdaptiveLayout.specFor(320, 600)
+        assertFalse(small.useTwoPanes)
+        assertTrue(small.stackToolbarActions)
+        assertEquals(2, small.paletteColumns)
+        val wide = AdaptiveLayout.specFor(1000, 720, 1f)
+        assertTrue(wide.useTwoPanes)
+        assertFalse(wide.stackToolbarActions)
+        assertEquals(4, wide.paletteColumns)
+    }
 }

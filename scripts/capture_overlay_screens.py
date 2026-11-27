@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from overlay_hardware_stop import press_and_release, observe_guest_volume_events
+from capture_evidence import read_verified_png
 
 ROOT = Path("qa/overlay-apk")
 OUT = Path("qa/overlay-screenshots")
@@ -19,14 +20,19 @@ SCENARIO = os.environ["OVERLAY_SCENARIO"]
 SDK_SETUP = "com.google.android.googlesdksetup"
 COMMON = {"DES-06-thumb-ready.png", "DES-07-thumb-menu.png", "DES-08-pair-selection.png"}
 SCENARIO_CAPTURE = {"countdown": "DES-09-thumb-running.png", "calibration": "DES-10-calibration.png"}
-assert SCENARIO in {"countdown", "calibration", "home-return"}
+IDLE_SCENARIOS = {"home-return", "vertical-idle"}
+assert SCENARIO in set(SCENARIO_CAPTURE) | IDLE_SCENARIOS
 EXPECTED = COMMON | ({SCENARIO_CAPTURE[SCENARIO]} if SCENARIO in SCENARIO_CAPTURE else set())
+if SCENARIO == "vertical-idle":
+    EXPECTED |= {"DES-10-calibration.png"}
 HOME_EVIDENCE = {"QA-home-after-window-change.png", "QA-home-after-hide.png"}
 ALLOWED = EXPECTED | {"QA-stopped.png", "diagnostic-failure.png",
                       "diagnostic-countdown.png", "diagnostic-calibration.png",
                       "diagnostic-stop-failure.png", "diagnostic-launcher-anr.png"}
-if SCENARIO == "home-return":
+if SCENARIO in IDLE_SCENARIOS:
     ALLOWED |= HOME_EVIDENCE
+if SCENARIO == "vertical-idle":
+    ALLOWED |= {"QA-vertical-markers-uncovered.png"}
 
 
 def adb(*args, timeout=45):
@@ -163,22 +169,25 @@ def collect():
     assert report["touch_mirroring_verified"] is False
     report["workflow_commit"] = os.environ.get("GITHUB_SHA", "unknown")
     report["checkout_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    assert report["checkout_commit"] == SOURCE, "Actual checkout differs from requested source"
+    report["run_attempt"] = os.environ.get("GITHUB_RUN_ATTEMPT", "unknown")
     report["final_report_available"] = final_report
+    report["host_capture_verified"] = False
+    report["host_scenario_verified"] = False
     (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     verified = set()
     for capture in report["captures"]:
         name = capture["file"]
         assert name in ALLOWED, "Unexpected screenshot filename"
-        data = read_private(name)
-        assert data.startswith(b"\x89PNG\r\n\x1a\n"), "Not a PNG"
-        assert hashlib.sha256(data).hexdigest() == capture["sha256"], "Capture integrity failure"
+        data = read_verified_png(read_private, name, capture["sha256"],
+                                 capture["width"], capture["height"])
         (OUT / name).write_bytes(data)
         if capture["design_state_verified"]:
             verified.add(name)
     assert final_report, "Only partial capture checkpoint recovered"
     assert report["completed"], report.get("error")
     assert verified == EXPECTED, f"Missing actual design states: {EXPECTED - verified}"
-    if SCENARIO == "home-return":
+    if SCENARIO in IDLE_SCENARIOS:
         captured = {item["file"] for item in report["captures"]}
         assert HOME_EVIDENCE <= captured, "Missing actual home transition evidence"
         assert any(item.get("home_return_safe_state_verified") is True and
@@ -186,6 +195,18 @@ def collect():
                    for item in report["observations"]), "Safe home transition not verified"
         assert any(item.get("home_hide_verified") is True for item in report["observations"]), "Floating hide not verified"
         assert not (verified & HOME_EVIDENCE), "Alternate home state must not count as a connected-design match"
+    if SCENARIO == "vertical-idle":
+        observations = report["observations"]
+        assert any(item.get("actual_vertical_bounds_verified") is True and
+                   item.get("split_orientation") == "vertical" for item in observations), "No actual upper/lower split evidence"
+        assert any(item.get("vertical_directions_verified") is True for item in observations), "Upper/lower approval choices unverified"
+        assert any(item.get("vertical_calibration_verified") is True for item in observations), "Vertical calibration/cancel unverified"
+        assert "QA-vertical-markers-uncovered.png" in captured, "Folded panel evidence missing"
+        assert any(item.get("vertical_marker_panel_uncovered") is True for item in observations), "Actual reference markers remain covered"
+        assert any(item.get("vertical_calibration_panel_reexpanded") is True for item in observations), "Calibration controls not restored"
+    report["host_capture_verified"] = True
+    (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    return report
 
 
 failure = None
@@ -203,8 +224,12 @@ try:
         one(ROOT / "test", "*.apk"),
     ]:
         adb("install", "-r", str(path), timeout=90)
-    adb("shell", "wm", "size", "1680x1440")
-    adb("shell", "wm", "density", "320")
+    if SCENARIO == "vertical-idle":
+        adb("shell", "wm", "size", "1080x2160")
+        adb("shell", "wm", "density", "420")
+    else:
+        adb("shell", "wm", "size", "1680x1440")
+        adb("shell", "wm", "density", "320")
     adb("shell", "cmd", "uimode", "night", "no")
     adb("shell", "wm", "dismiss-keyguard")
     prepare_fixture()
@@ -219,14 +244,16 @@ try:
         "callbacks": callbacks
     }, indent=2), encoding="utf-8")
     # Copy all verified screenshots before evaluating the stop result.
-    collect()
+    report = collect()
     assert code == 0 and b"INSTRUMENTATION_CODE: -1" in stdout, "Instrumentation did not finish successfully"
-    if SCENARIO == "home-return":
-        assert not requested and not callbacks, "Idle home scenario must not request a hardware stop"
+    if SCENARIO in IDLE_SCENARIOS:
+        assert not requested and not callbacks, "Idle scenario must not request or simulate a hardware stop"
     else:
         assert requested, "No hardware stop request was observed"
         assert command and command["press_ok"] and command["release_ok"], "Emulator hardware-button command failed"
         assert callbacks == ["volume_down_received", "volume_down_completed input_off=true"], "Real key callback and input release not verified"
+    report["host_scenario_verified"] = True
+    (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 except Exception as error:
     failure = str(error)
     (OUT / "host-failure.json").write_text(json.dumps({
