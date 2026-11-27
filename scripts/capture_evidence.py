@@ -42,8 +42,28 @@ def messages_anr_focused(dump):
     ))
 
 
+def focused_windows(dump):
+    # Some Android versions omit mCurrentFocus from the window-only dump.
+    # An explicit foreign/null focus is not the same as missing metadata.
+    return re.findall(r"(?m)^\s*mCurrentFocus\s*=\s*([^\r\n]+)", dump)
+
+
 def controller_focused(dump):
-    return bool(re.search(
-        r"(?m)^\s*mCurrentFocus=Window\{[^\n]*\scom\.hebi\.dualtouch/(?:com\.hebi\.dualtouch)?\.(?:MainActivity|SettingsActivity)\}\s*$",
-        dump,
-    ))
+    windows = focused_windows(dump)
+    return bool(windows) and all(re.fullmatch(
+        r"Window\{[^\n]*\scom\.hebi\.dualtouch/(?:com\.hebi\.dualtouch)?\.(?:MainActivity|SettingsActivity)\}",
+        window.strip(),
+    ) for window in windows)
+
+
+def controller_focus_verified(window_dump, activity_dump):
+    # The activity diagnostic used by Android 15 also exposes the current
+    # window and resumed Activity. Always require the latter, and reject
+    # explicit disagreement; fall back only if the window query omits focus.
+    if not controller_resumed(activity_dump):
+        return False
+    if focused_windows(window_dump):
+        if not controller_focused(window_dump):
+            return False
+        return not focused_windows(activity_dump) or controller_focused(activity_dump)
+    return controller_focused(activity_dump)

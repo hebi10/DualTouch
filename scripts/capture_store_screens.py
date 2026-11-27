@@ -7,7 +7,7 @@ import subprocess
 import time
 import xml.etree.ElementTree as ET
 
-from capture_evidence import controller_focused, controller_resumed, messages_anr_focused
+from capture_evidence import controller_focus_verified, controller_resumed, messages_anr_focused, focused_windows
 from pathlib import Path
 
 PACKAGE = "com.hebi.dualtouch"
@@ -96,9 +96,11 @@ def recover_messages_anr(activity_dump):
     # Require the observed and fresh resumed controller, plus the exact current ANR.
     if not controller_resumed(activity_dump) or not messages_anr_focused(activity_dump):
         return False
-    if not controller_resumed(shell("dumpsys", "activity", "activities")):
+    fresh_activity = shell("dumpsys", "activity", "activities")
+    if not controller_resumed(fresh_activity) or not messages_anr_focused(fresh_activity):
         return False
-    if not messages_anr_focused(shell("dumpsys", "window", "windows")):
+    fresh_window = shell("dumpsys", "window", "windows")
+    if focused_windows(fresh_window) and not messages_anr_focused(fresh_window):
         return False
     fixture_messages_recovered = True
     (OUTPUT / "fixture-messages-anr.png").write_bytes(adb("exec-out", "screencap", "-p"))
@@ -113,6 +115,12 @@ def recover_messages_anr(activity_dump):
     return True
 
 
+def current_controller_focus():
+    window = shell("dumpsys", "window", "windows")
+    activity = shell("dumpsys", "activity", "activities")
+    return controller_focus_verified(window, activity)
+
+
 def nodes():
     for _ in range(6):
         if recover_initial_launcher_anr():
@@ -123,7 +131,7 @@ def nodes():
             raw = adb("exec-out", "cat", "/sdcard/dualtouch-window.xml")
             tree = ET.fromstring(raw)
             if (any(n.get("package") == PACKAGE for n in tree.iter("node")) and
-                    controller_focused(shell("dumpsys", "window", "windows"))):
+                    current_controller_focus()):
                 return tree
         except (ET.ParseError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
             pass
@@ -131,6 +139,7 @@ def nodes():
     activity = shell("dumpsys", "activity", "activities")
     (OUTPUT / "diagnostic-screen.png").write_bytes(adb("exec-out", "screencap", "-p"))
     (OUTPUT / "diagnostic-activity.txt").write_text(activity, encoding="utf-8")
+    (OUTPUT / "diagnostic-window.txt").write_text(shell("dumpsys", "window", "windows"), encoding="utf-8")
     (OUTPUT / "diagnostic-crash.txt").write_text(shell("logcat", "-d", "-b", "crash"), encoding="utf-8")
     # Preserve the first failure evidence, then permit the existing one-time
     # guarded launcher recovery if the ANR appeared during the last dump.
@@ -139,8 +148,30 @@ def nodes():
     raise AssertionError("App accessibility root or focus was unavailable after bounded retries")
 
 
+def swipe_content(tree, forward=True):
+    # Use the actual scrollable vertical container. This avoids swiping a
+    # SeekBar or the empty margin outside a centered reading column.
+    candidates = []
+    for node in tree.iter("node"):
+        if node.get("package") != PACKAGE or node.get("class") != "android.widget.ScrollView":
+            continue
+        bounds = list(map(int, re.findall(r"\d+", node.get("bounds", ""))))
+        if len(bounds) == 4:
+            left, top, right, bottom = bounds
+            if right > left and bottom > top:
+                candidates.append((left, top, right, bottom))
+    assert candidates, "No visible controller scroll container"
+    left, top, right, bottom = max(candidates, key=lambda b: (b[2]-b[0])*(b[3]-b[1]))
+    # Inside the left edge of content; leave room for a centered narrow page.
+    x = left + max(1, (right-left)//4)
+    high, low = top + (bottom-top)//4, top + (bottom-top)*3//4
+    start, end = (low, high) if forward else (high, low)
+    shell("input", "swipe", str(x), str(start), str(x), str(end), "450")
+    time.sleep(0.7)
+
+
 def tap(text):
-    for _ in range(8):
+    for attempt in range(16):
         tree = nodes()
         for node in tree.iter("node"):
             if node.get("package") == PACKAGE and node.get("text") == text:
@@ -150,10 +181,7 @@ def tap(text):
                           str((bounds[1] + bounds[3]) // 2))
                     time.sleep(1)
                     return
-        size = re.findall(r"(\d+)x(\d+)", shell("wm", "size"))[-1]
-        width, height = map(int, size)
-        shell("input", "swipe", str(width // 2), str(height * 3 // 4),
-              str(width // 2), str(height // 4), "300")
+        swipe_content(tree, forward=attempt < 8)
     raise AssertionError("Missing visible control: " + text)
 
 
@@ -163,10 +191,7 @@ def scroll_to_visible_text(text, max_steps=9):
         if any(node.get("package") == PACKAGE and node.get("text") == text
                and node.get("bounds") not in (None, "[0,0][0,0]") for node in tree.iter("node")):
             return
-        width, height = map(int, re.findall(r"(\d+)x(\d+)", shell("wm", "size"))[-1])
-        shell("input", "swipe", str(width // 8), str(height * 3 // 4),
-              str(width // 8), str(height // 3), "450")
-        time.sleep(0.7)
+        swipe_content(tree)
     raise AssertionError("Missing visible section: " + text)
 
 
@@ -199,9 +224,9 @@ def verify_accessibility_settings():
 def capture(name):
     tree = nodes()
     assert any(n.get("package") == PACKAGE for n in tree.iter("node")), "App UI missing"
-    assert controller_focused(shell("dumpsys", "window", "windows")), "Controller not focused before screenshot"
+    assert current_controller_focus(), "Controller not focused before screenshot"
     data = adb("exec-out", "screencap", "-p")
-    assert controller_focused(shell("dumpsys", "window", "windows")), "Controller lost focus during screenshot"
+    assert current_controller_focus(), "Controller lost focus during screenshot"
     assert data.startswith(b"\x89PNG\r\n\x1a\n"), "Invalid screenshot"
     path = OUTPUT / (name + ".png")
     path.write_bytes(data)
@@ -294,6 +319,7 @@ try:
         assert float(shell("settings", "get", "system", "font_scale").strip()) == float(scale)
         scroll_to_visible_text("현재 상태", max_steps=15)
         capture(label + "-home")
+        launch()
         tap("표시 설정")
         scroll_to_visible_text("미리보기", max_steps=15)
         capture(label + "-settings")

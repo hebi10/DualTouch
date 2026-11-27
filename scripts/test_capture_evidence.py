@@ -50,5 +50,30 @@ class CaptureFocusTest(unittest.TestCase):
         self.assertFalse(controller_focused("mCurrentFocus=Window{abc u0 com.android.settings/.Settings}"))
         self.assertFalse(controller_resumed("topResumedActivity=ActivityRecord{abc u0 com.hebi.dualtouch.fake/.MainActivity t8}"))
 
+    def test_focus_uses_activity_only_when_window_metadata_is_missing(self):
+        from capture_evidence import controller_focus_verified
+        activity = (
+            "    topResumedActivity=ActivityRecord{5bf37a2 u0 com.hebi.dualtouch/.MainActivity t11}\n"
+            "  mCurrentFocus=Window{d60d653 u0 com.hebi.dualtouch/com.hebi.dualtouch.MainActivity}"
+        )
+        self.assertTrue(controller_focus_verified("WINDOW MANAGER WINDOWS (dumpsys window windows)", activity))
+        self.assertTrue(controller_focus_verified(activity, activity))
+        self.assertFalse(controller_focus_verified("mCurrentFocus=null", activity))
+        self.assertFalse(controller_focus_verified(
+            "mCurrentFocus=Window{abc u0 com.android.settings/.Settings}", activity))
+        self.assertFalse(controller_focus_verified(
+            activity, activity.replace("u0 com.hebi.dualtouch/.MainActivity", "u0 com.android.settings/.Settings")))
+        self.assertFalse(controller_focus_verified("", ""))
+        self.assertFalse(controller_focus_verified("", activity.splitlines()[0]))
+
+    def test_conflicting_focus_observations_are_rejected(self):
+        from capture_evidence import controller_focus_verified
+        resumed = "topResumedActivity=ActivityRecord{abc u0 com.hebi.dualtouch/.SettingsActivity t8}"
+        own = "mCurrentFocus=Window{def u0 com.hebi.dualtouch/.SettingsActivity}"
+        other = "mCurrentFocus=Window{ghi u0 Application Not Responding: com.google.android.apps.messaging}"
+        self.assertFalse(controller_focus_verified(own, resumed + "\n" + other))
+        self.assertFalse(controller_focus_verified(own + "\n" + other, resumed + "\n" + own))
+
+
 if __name__ == "__main__":
     unittest.main()
