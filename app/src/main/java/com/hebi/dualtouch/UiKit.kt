@@ -6,6 +6,7 @@ import android.content.res.Configuration
 import android.graphics.drawable.GradientDrawable
 import android.view.Gravity
 import android.view.WindowInsets
+import android.view.WindowInsetsController
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.LinearLayout
@@ -53,6 +54,14 @@ object UiKit {
             0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f - primaryWeight,
         ))
         return PanePair(row, primary, secondary)
+    }
+
+    fun applySystemBarAppearance(activity: Activity) {
+        val dark = (activity.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        val mask = WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or
+            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        activity.window.insetsController?.setSystemBarsAppearance(if (dark) 0 else mask, mask)
     }
 
     fun applyWindowInsets(scroll: ScrollView) {

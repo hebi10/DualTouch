@@ -49,4 +49,24 @@ class ThumbUiStateTest {
         calibration.setPair(null)
         assertFalse(calibration.hasSaved(pair, TouchSide.LEFT))
     }
+    @Test fun homeGuidanceDoesNotSuggestStartingWhenRunningOrBlocked() {
+        fun guidance(phase: InteractionPhase?, state: ThumbUiState?) =
+            homeNextStep(true, true, true, phase, state)
+        assertTrue(guidance(InteractionPhase.ACTIVE, state()).contains("중지"))
+        assertTrue(guidance(InteractionPhase.PAUSED, state(paused = true)).contains("일시 중지"))
+        assertTrue(guidance(InteractionPhase.READY, state(running = false, issue = SafetyIssue.PAIR_CHANGED)).contains("중지 사유"))
+        assertTrue(guidance(InteractionPhase.PAUSED, state(calibrating = true, running = false)).contains("저장하거나 취소"))
+        assertTrue(guidance(InteractionPhase.READY, state(running = false, processing = true)).contains("끝날 때까지"))
+    }
+
+    @Test fun homeGuidancePrioritizesPermissionAndRealConnection() {
+        assertEquals("접근성 권한을 설정해 주세요.",
+            homeNextStep(false, true, true, InteractionPhase.ACTIVE, state()))
+        assertEquals("플로팅 표시를 눌러 Thumb를 열어 주세요.",
+            homeNextStep(true, false, false, InteractionPhase.OFF, null))
+        assertEquals("두 앱을 분할한 뒤 Thumb에서 연결하세요.",
+            homeNextStep(true, true, false, InteractionPhase.WAITING, state(connected = false, running = false)))
+        assertEquals("Thumb에서 실행 또는 영점 조절을 선택하세요.",
+            homeNextStep(true, true, true, InteractionPhase.READY, state(running = false)))
+    }
 }

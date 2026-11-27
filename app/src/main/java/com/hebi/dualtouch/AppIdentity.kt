@@ -69,7 +69,8 @@ internal fun appIdentityTile(context: Context, palette: UiPalette, packageName: 
             importantForAccessibility = android.view.View.IMPORTANT_FOR_ACCESSIBILITY_NO
         }, LinearLayout.LayoutParams(UiKit.dp(context, 32), UiKit.dp(context, 32)))
     } else {
-        UiKit.add(tile, UiKit.centeredLabel(context, "▥", palette.secondary, 22f))
+        tile.addView(UiKit.iconView(context, LineIcon.SPLIT, palette.secondary, 28),
+            LinearLayout.LayoutParams(UiKit.dp(context, 32), UiKit.dp(context, 32)))
     }
     UiKit.add(tile, UiKit.centeredLabel(context, appDisplayLabel(context, packageName), palette.text, 13f), topDp = 6)
     UiKit.add(tile, UiKit.centeredLabel(context, role, palette.secondary, 12f), topDp = 4)

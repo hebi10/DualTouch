@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from overlay_hardware_stop import press_and_release, observe_guest_volume_events
+from capture_evidence import read_verified_png
 
 ROOT = Path("qa/overlay-apk")
 OUT = Path("qa/overlay-screenshots")
@@ -163,15 +164,18 @@ def collect():
     assert report["touch_mirroring_verified"] is False
     report["workflow_commit"] = os.environ.get("GITHUB_SHA", "unknown")
     report["checkout_commit"] = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    assert report["checkout_commit"] == SOURCE, "Actual checkout differs from requested source"
+    report["run_attempt"] = os.environ.get("GITHUB_RUN_ATTEMPT", "unknown")
     report["final_report_available"] = final_report
+    report["host_capture_verified"] = False
+    report["host_scenario_verified"] = False
     (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     verified = set()
     for capture in report["captures"]:
         name = capture["file"]
         assert name in ALLOWED, "Unexpected screenshot filename"
-        data = read_private(name)
-        assert data.startswith(b"\x89PNG\r\n\x1a\n"), "Not a PNG"
-        assert hashlib.sha256(data).hexdigest() == capture["sha256"], "Capture integrity failure"
+        data = read_verified_png(read_private, name, capture["sha256"],
+                                 capture["width"], capture["height"])
         (OUT / name).write_bytes(data)
         if capture["design_state_verified"]:
             verified.add(name)
@@ -186,6 +190,9 @@ def collect():
                    for item in report["observations"]), "Safe home transition not verified"
         assert any(item.get("home_hide_verified") is True for item in report["observations"]), "Floating hide not verified"
         assert not (verified & HOME_EVIDENCE), "Alternate home state must not count as a connected-design match"
+    report["host_capture_verified"] = True
+    (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+    return report
 
 
 failure = None
@@ -219,7 +226,7 @@ try:
         "callbacks": callbacks
     }, indent=2), encoding="utf-8")
     # Copy all verified screenshots before evaluating the stop result.
-    collect()
+    report = collect()
     assert code == 0 and b"INSTRUMENTATION_CODE: -1" in stdout, "Instrumentation did not finish successfully"
     if SCENARIO == "home-return":
         assert not requested and not callbacks, "Idle home scenario must not request a hardware stop"
@@ -227,6 +234,8 @@ try:
         assert requested, "No hardware stop request was observed"
         assert command and command["press_ok"] and command["release_ok"], "Emulator hardware-button command failed"
         assert callbacks == ["volume_down_received", "volume_down_completed input_off=true"], "Real key callback and input release not verified"
+    report["host_scenario_verified"] = True
+    (OUT / "report.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 except Exception as error:
     failure = str(error)
     (OUT / "host-failure.json").write_text(json.dumps({

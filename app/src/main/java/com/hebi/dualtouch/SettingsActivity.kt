@@ -49,6 +49,7 @@ class SettingsActivity : Activity() {
         )
         UiKit.applyWindowInsets(scroll)
         setContentView(scroll)
+        UiKit.applySystemBarAppearance(this)
 
         if (viewport.widthCategory == WidthCategory.COMPACT) root.setPadding(UiKit.dp(this, 4), UiKit.dp(this, 6), UiKit.dp(this, 4), UiKit.dp(this, 20))
         UiKit.add(root, UiKit.toolbar(this, palette, "터치 표시 설정", back = { finish() }))

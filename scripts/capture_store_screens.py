@@ -158,6 +158,7 @@ def capture(name):
 
 
 try:
+    assert subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip() == os.environ["SOURCE_SHA"], "Actual checkout differs from requested source"
     prepare_fixture()
     shell("wm", "size", "1080x1920")
     shell("wm", "density", "420")
@@ -215,6 +216,8 @@ finally:
     (OUTPUT / "capture-metadata.json").write_text(json.dumps({
         "source_commit": os.environ.get("SOURCE_SHA", "unknown"),
         "workflow_commit": os.environ.get("GITHUB_SHA", "unknown"),
+        "checkout_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+        "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", "unknown"),
         "android_api": shell("getprop", "ro.build.version.sdk").strip(),
         "environment": "Android emulator; 9:16 phone plus resized 16:9 tablet viewports",
         "physical_tablet_verified": False,
