@@ -217,6 +217,45 @@ class OverlayCaptureRunner : Instrumentation() {
     private fun tapWithScroll(pkg: String, value: String) =
         tap(awaitWithScroll(pkg, value) { it.text == value })
 
+    // On the pre-permission controller pages a scroll may move the button after
+    // a bounds snapshot. Resolve the exact enabled native button in the focused
+    // application window and invoke its own click action, not a stale coordinate.
+    // This never writes consent or system settings; the real consent UI follows.
+    private fun clickControllerButton(label: String) {
+        check(!serviceEnabledInSettings()) { "Controller onboarding must precede service enablement" }
+        awaitWithScroll(APP, label) { it.text == label }
+        waitFor("actual controller button action: $label", 10000) {
+            if (activeApplicationPackage() != APP || serviceEnabledInSettings()) return@waitFor false
+            for (window in automation.windows) {
+                if (window.type != AccessibilityWindowInfo.TYPE_APPLICATION ||
+                    !(window.isActive || window.isFocused)) continue
+                val root = window.root ?: continue
+                try {
+                    if (root.packageName?.toString() != APP) continue
+                    val matches = root.findAccessibilityNodeInfosByText(label)
+                    try {
+                        val button = matches.filter {
+                            it.packageName?.toString() == APP &&
+                                it.text?.toString() == label &&
+                                it.isVisibleToUser && it.isEnabled && it.isClickable &&
+                                it.className?.toString() == "android.widget.Button" &&
+                                it.actionList.any { action -> action.id == AccessibilityNodeInfo.ACTION_CLICK }
+                        }.singleOrNull()
+                        if (button != null && button.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                            observations.put(JSONObject().put("controller_button_action_accepted", label))
+                            return@waitFor true
+                        }
+                    } finally {
+                        matches.forEach { it.recycle() }
+                    }
+                } finally {
+                    root.recycle()
+                }
+            }
+            false
+        }
+    }
+
     private fun thumb(label: String) = awaitNode("Thumb $label") {
         it.pkg == APP && it.text == label && it.description.startsWith("DualTouch Thumb.")
     }
@@ -480,10 +519,16 @@ class OverlayCaptureRunner : Instrumentation() {
             }
         }
         observations.put(JSONObject().put("onboarding_foreground_verified", true))
-        tapWithScroll(APP, "내용을 이해하고 계속")
+        clickControllerButton("내용을 이해하고 계속")
+        awaitNode("actual controller home after onboarding") { it.pkg == APP && it.text == "현재 상태" }
         stage = "permission flow / disclosure"
-        tapWithScroll(APP, "접근성 권한 설정")
-        tapText(APP, "동의하고 설정 열기")
+        clickControllerButton("접근성 권한 설정")
+        // Require the actual disclosure and both decisions before confirming.
+        // The ordinary screen capture independently checks the disclosure text.
+        awaitNode("actual disclosure title") { it.pkg == APP && it.text == "접근성 권한" }
+        awaitNode("actual disclosure decline option") { it.pkg == APP && it.text == "나중에" }
+        awaitNode("actual disclosure accept option") { it.pkg == APP && it.text == "동의하고 설정 열기" }
+        clickControllerButton("동의하고 설정 열기")
         // Traverse the real system Settings UI, including its confirmation.
         // No settings-put, run-as preference writes, or direct service activation.
         stage = "permission flow / system service list"
@@ -783,8 +828,26 @@ class OverlayCaptureRunner : Instrumentation() {
         stage = "calibration / cancel"
         if (scenario == "vertical-idle") tapWithScroll(APP, "취소")
         else tapText(APP, "취소")
-        thumb("대기")
+        // Let the real post-cancel inspection run without competing full-tree
+        // observer polling during its 500 ms safety budget. No product deadline,
+        // pair approval, or fail-closed condition is changed.
+        SystemClock.sleep(1000)
+        val exitState = awaitNode("actual calibration cancellation result", 15000) {
+            it.pkg == APP && it.description.startsWith("DualTouch Thumb.") &&
+                it.text in setOf("대기", "오류")
+        }
+        observations.put(JSONObject().put("calibration_cancel_thumb_state", exitState.description))
+        check(exitState.text == "대기" && exitState.description.contains("연결됨 · 실행 대기")) {
+            "Calibration cancellation did not restore approved idle state: " + exitState.description
+        }
+        requireSplit()
+        check(visibleNodes().none { it.pkg == APP &&
+            (it.description.startsWith("직접 터치 보정점") ||
+                it.description.startsWith("자동 터치 보정점") || it.text == "영점 저장") }) {
+            "Calibration controls remained after cancellation"
+        }
         if (scenario == "vertical-idle") {
+            requireVerticalSplit()
             observations.put(JSONObject().put("vertical_calibration_verified", true))
         }
     }
