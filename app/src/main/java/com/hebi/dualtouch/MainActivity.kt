@@ -298,28 +298,39 @@ class MainActivity : Activity() {
         }
 
     private fun intro() {
-        header("DualTouch", "사용자가 연결한 두 분할 앱의 터치 동기화", false)
-        section("두 분할 앱의 짧은 탭 제어", 20)
+        if (viewport.widthCategory == WidthCategory.COMPACT) {
+            val padding = UiKit.dp(this, 4)
+            root.setPadding(padding, 0, padding, padding)
+        }
+        header("DualTouch", "분할 화면 터치 제어", false)
         addSplitExample()
-        card("이 앱의 사용 범위",
-            "현재 열려 있는 두 분할 앱을 사용자가 직접 연결하면 한쪽의 탭을 다른 쪽에도 재생합니다. 동일 앱은 Android가 별도 창 2개를 지원할 때만 연결됩니다.")
-        card("접근성 서비스 사용",
-            "화면 위에 작은 조절점(Thumb)을 띄우고, 사용자가 실행을 선택하면 Android 입력 이벤트를 수신해 상대 창으로 가상 터치를 재생합니다.")
-        card("개인정보와 주의사항",
-            "화면 내용·비밀번호·터치 기록을 서버에 전송하거나 저장하지 않습니다. " +
-                "입력 수신 중 원래 터치가 차단되거나 재현에 실패할 수 있습니다. 금융·결제·비밀번호·민감한 화면은 차단하거나 지원하지 않습니다.")
-        section("사용 순서", 20)
-        addSteps(listOf(
-            "접근성 권한 설정" to "고지 내용을 확인하고 Android 설정에서 직접 허용합니다.",
-            "플로팅 표시" to "홈에서 Thumb를 표시합니다.",
-            "두 앱 분할 및 연결" to "Android 분할 화면을 열고 두 앱과 방향을 승인합니다.",
-            "Thumb에서 실행" to "한 손가락의 짧은 탭만 지원하며 최대 20초 후 중지됩니다."
-        ))
-        addAction("내용을 이해하고 계속", top = 26) {
+        addBody(
+            "직접 연결한 두 분할 창에 짧은 탭을 재현합니다. 같은 앱은 Android에서 창 두 개를 열 수 있을 때 연결됩니다.",
+            secondary = true,
+            top = 6,
+        )
+        section("사용 순서", 8)
+        addSteps(
+            listOf(
+                "접근성 권한 설정" to "고지 확인 후 Android 설정에서 직접 허용",
+                "플로팅 표시" to "홈에서 화면 조절점(Thumb) 표시",
+                "두 앱 분할 및 연결" to "두 창과 터치 방향을 직접 승인",
+                "Thumb에서 실행" to "한 손가락의 짧은 탭 지원 · 최대 20초",
+            ),
+            compact = true,
+        )
+        val safety = UiKit.card(this, palette, 10)
+        UiKit.add(safety, UiKit.text(this, palette, "안전한 사용", 15f, true))
+        UiKit.add(safety, UiKit.text(this, palette,
+            "실행 중 접근성 서비스로 터치를 받아 반대편에 재현합니다. 원래 터치가 차단되거나 재현에 실패할 수 있습니다. " +
+                "화면·비밀번호·터치 기록은 저장하거나 외부로 전송하지 않습니다. 금융·결제·비밀번호 등 민감한 화면은 지원하지 않습니다.",
+            13f, secondary = true), topDp = 3)
+        UiKit.add(root, safety, topDp = 8)
+        addAction("내용을 이해하고 계속", top = 8) {
             settings.onboardingRead = true
             go(Page.HOME)
         }
-        addAction("나중에", false) { finish() }
+        addAction("나중에", false, top = 6) { finish() }
     }
 
     private fun statusRow(parent: LinearLayout, label: String, kind: LineIcon): TextView {
@@ -570,14 +581,21 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun addSteps(steps: List<Pair<String, String>>) {
-        val container = UiKit.card(this, palette, 12)
+    private fun addSteps(steps: List<Pair<String, String>>, compact: Boolean = false) {
+        val container = UiKit.card(this, palette, if (compact) 10 else 12)
+        val dividerGap = if (compact) 2 else 8
         steps.forEachIndexed { index, (title, detail) ->
             if (index > 0) {
-                UiKit.add(container, View(this).apply {
+                val divider = View(this).apply {
                     setBackgroundColor(palette.line)
-                    minimumHeight = UiKit.dp(this@MainActivity, 1)
-                }, topDp = 8, bottomDp = 8)
+                }
+                container.addView(divider, LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    UiKit.dp(this, 1),
+                ).apply {
+                    topMargin = UiKit.dp(this@MainActivity, dividerGap)
+                    bottomMargin = topMargin
+                })
             }
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -593,22 +611,23 @@ class MainActivity : Activity() {
             })
             val body = UiKit.column(this)
             UiKit.add(body, UiKit.text(this, palette, title, 15f, true))
-            UiKit.add(body, UiKit.text(this, palette, detail, 14f, secondary = true), topDp = 4)
+            UiKit.add(body, UiKit.text(this, palette, detail, if (compact) 13f else 14f, secondary = true),
+                topDp = if (compact) 2 else 4)
             row.addView(body, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             UiKit.add(container, row)
         }
-        UiKit.add(root, container, topDp = 10)
+        UiKit.add(root, container, topDp = if (compact) 6 else 10)
     }
 
     private fun addSplitExample() {
-        val sample = UiKit.card(this, palette)
+        val sample = UiKit.card(this, palette, 9)
         UiKit.add(sample, UiKit.text(this, palette, "동작 원리 예시", 15f, true))
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
         fun examplePane(label: String, color: Int): LinearLayout {
-            return UiKit.column(this, 8).apply {
+            return UiKit.column(this, 6).apply {
                 gravity = Gravity.CENTER_HORIZONTAL
                 background = UiKit.shape(palette.background, palette.line)
                 UiKit.add(this, UiKit.centeredLabel(this@MainActivity, label, palette.text, 14f))
@@ -621,18 +640,17 @@ class MainActivity : Activity() {
                     importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
                 }
                 addView(marker, LinearLayout.LayoutParams(UiKit.dp(this@MainActivity, 24),
-                    UiKit.dp(this@MainActivity, 24)).apply { topMargin = UiKit.dp(this@MainActivity, 8) })
+                    UiKit.dp(this@MainActivity, 24)).apply { topMargin = UiKit.dp(this@MainActivity, 6) })
             }
         }
-        row.addView(examplePane("앱 A\n직접점", 0xFFC62828.toInt()),
+        row.addView(examplePane("앱 A · 직접점", 0xFFC62828.toInt()),
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         row.addView(UiKit.centeredLabel(this, "→", palette.text, 20f),
             LinearLayout.LayoutParams(UiKit.dp(this, 36), ViewGroup.LayoutParams.WRAP_CONTENT))
-        row.addView(examplePane("앱 B\n자동점", 0xFFFFFFFF.toInt()),
+        row.addView(examplePane("앱 B · 자동점", 0xFFFFFFFF.toInt()),
             LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        UiKit.add(sample, row, topDp = 10)
-        UiKit.add(sample, UiKit.text(this, palette, "동작 원리 예시입니다. 짧은 탭을 반대편 위치에 순차 재현하며 실제 입력 성공을 보장하지 않습니다. 상하 분할도 검증 대상입니다.", 13f, secondary = true), topDp = 10)
-        UiKit.add(root, sample, topDp = 12)
+        UiKit.add(sample, row, topDp = 6)
+        UiKit.add(root, sample, topDp = 9)
     }
 
     private fun addLayoutExamples() {
